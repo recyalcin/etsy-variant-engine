@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Etsy Varyant Otomasyon Paneli</title>
+  <style>
+    :root{
+      --bg:#0b0f14; --card:#111824; --muted:#9fb0c3; --text:#e7eef7;
+      --ok:#2ecc71; --bad:#ff5c5c; --line:#223043; --btn:#1f6feb;
+      --pre:#0a0f18;
+    }
+    body{font-family:Segoe UI, Arial, sans-serif;background:var(--bg);color:var(--text);max-width:1100px;margin:24px auto;padding:0 14px}
+    h2{margin:0 0 10px 0;font-weight:650}
+    .sub{color:var(--muted);margin:0 0 18px 0}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    label{color:var(--muted)}
+    input[type="number"]{
+      width:220px;background:#0d1420;border:1px solid var(--line);color:var(--text);
+      padding:10px;border-radius:10px;outline:none
+    }
+    textarea{
+      width:100%;height:280px;background:#0d1420;border:1px solid var(--line);
+      color:var(--text);padding:12px;border-radius:12px;outline:none;resize:vertical;
+      font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size:13px;line-height:1.35
+    }
+    button{
+      background:var(--btn);border:none;color:white;padding:10px 14px;border-radius:10px;
+      cursor:pointer;font-weight:650
+    }
+    button:hover{filter:brightness(1.05)}
+    .pill{display:inline-block;padding:6px 10px;border-radius:999px;font-weight:700;font-size:12px}
+    .ok{background:rgba(46,204,113,.12);color:var(--ok);border:1px solid rgba(46,204,113,.35)}
+    .bad{background:rgba(255,92,92,.12);color:var(--bad);border:1px solid rgba(255,92,92,.35)}
+    pre{
+      background:var(--pre);border:1px solid var(--line);
+      padding:12px;border-radius:12px;overflow:auto;max-height:520px;
+      font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size:12.5px;line-height:1.35
+    }
+    details{border:1px solid var(--line);border-radius:12px;padding:10px;background:#0d1420}
+    summary{cursor:pointer;color:var(--muted);font-weight:650}
+    .hint{color:var(--muted);font-size:12px;margin-top:8px}
+    .split{display:grid;grid-template-columns:1fr;gap:12px}
+    @media (min-width: 980px){
+      .split{grid-template-columns:1.1fr .9fr}
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Etsy Varyant Otomasyon Paneli</h2>
+  <p class="sub">Atölye metnini yapıştır → payload otomatik oluşur → dry-run ile kontrol et → sonra gerçek çalıştır.</p>
+
+  <div class="card">
+    <form method="post" action="/run">
+      <div class="row">
+        <label>Listing ID</label>
+        <input type="number" name="listing_id" required value="{{ form.listing_id if form else '' }}"/>
+
+        <label style="margin-left:6px">
+          <input type="checkbox" name="dry_run" value="true" {% if form and form.dry_run %}checked{% endif %}/>
+          Dry-run
+        </label>
+
+        <button type="submit">Çalıştır</button>
+      </div>
+
+      <div style="margin-top:12px">
+        <label>Atölye Metni (WhatsApp)</label>
+        <textarea name="workshop_text" placeholder="Type : ...&#10;Size : ...&#10;Color : GOLD, SILVER, ROSE&#10;Length : 5&quot;, 5.5&quot;...&#10;Quantity : ...&#10;Space : ...&#10;Start : ortada&#10;Price : ...">{{ form.workshop_text if form else '' }}</textarea>
+        <div class="hint">
+          İpucu: “Price: $82” → fixed, “Gold - $82” → by_color, “1 taki - $58” → by_qty (quantity listesinden sayı çekilir).
+        </div>
+      </div>
+    </form>
+  </div>
+
+  {% if result %}
+    <div class="split">
+      <div class="card">
+        {% if result.ok %}
+          <span class="pill ok">OK</span>
+        {% else %}
+          <span class="pill bad">HATA</span>
+          <div style="margin-top:10px;color:var(--bad);font-weight:650">{{ result.error }}</div>
+        {% endif %}
+
+        <h3 style="margin:14px 0 10px 0">Üretilen Payload</h3>
+        <pre>{{ result.payload | tojson(indent=2) }}</pre>
+      </div>
+
+      <div class="card">
+        <h3 style="margin:0 0 10px 0">Çıktı / Log</h3>
+
+        <!-- expandable logs -->
+        <details {% if not result.ok %}open{% endif %}>
+          <summary>Logları göster / gizle</summary>
+          <div style="margin-top:10px">
+            <pre>{{ result.logs }}</pre>
+          </div>
+        </details>
+
+        <div class="hint" style="margin-top:10px">
+          Not: Dry-run açıkken DB write ve Etsy PUT yapılmaz; sadece plan + örnek üretim görülür.
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+</body>
+</html>
