@@ -1,6 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pymysql
 requests
 python-dotenv
 jinja2
+python-multipart
+email-validator
+watchfiles

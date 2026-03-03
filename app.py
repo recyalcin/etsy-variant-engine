@@ -3,7 +3,7 @@
 # - Script'siz çalışır: index.html <form action="/run"> server-side render eder
 # - Ayrıca JSON API endpointleri de var: /api/preview, /api/run
 # - Dry-run: DB write + Etsy PUT yapmadan plan/log üretir
-# - Metin silinmez: form değerleri template'e geri basılır
+# - Workshop text içine gömülü JSON override bloğunu parse eder (component_overrides vs)
 
 import os
 import json
@@ -11,7 +11,7 @@ import time
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, List, Dict, Any
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -90,25 +90,125 @@ def run_cmd(cmd, timeout=300):
         return 1, "[APP][ERROR] %r" % e
 
 
+def _split_csv(v: str):
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+
+def _extract_json_block(text: str) -> Tuple[str, dict]:
+    """
+    Workshop text'in sonunda (veya içinde) JSON override bloğu varsa parse eder.
+    JSON bloğu şu şekilde olmalı:
+      {
+        "component_overrides": {...},
+        "display_value_overrides_by_property": {...}
+      }
+
+    Döner:
+      (clean_text_without_json, overrides_dict)
+    """
+    txt = (text or "").strip()
+    if not txt:
+        return "", {}
+
+    # JSON bloğu aramak için: ilk '{' karakterinden itibaren JSON dene.
+    first = txt.find("{")
+    if first == -1:
+        return txt, {}
+
+    prefix = txt[:first].rstrip()
+    candidate = txt[first:].strip()
+
+    try:
+        overrides = json.loads(candidate)
+        if isinstance(overrides, dict):
+            return prefix, overrides
+        return txt, {}
+    except Exception:
+        # JSON değilse hiç dokunma
+        return txt, {}
+
+
+def _merge_overrides(payload: dict, overrides: dict) -> dict:
+    """
+    override dict içindeki bilinen anahtarları payload'a merge eder.
+    Bilinmeyenleri de istersen ekleyebilirsin ama burada kontrollü gidiyoruz.
+    """
+    if not isinstance(overrides, dict) or not overrides:
+        return payload
+
+    allowed = {
+        "component_overrides",
+        "delim_overrides",
+        "display_value_overrides",
+        "display_value_overrides_by_property",
+        "qty_numbers",
+        "readiness_state_id",
+    }
+
+    for k, v in overrides.items():
+        if k in allowed:
+            payload[k] = v
+    return payload
+
+
+# ---------------------------
+# Normalization helpers
+# ---------------------------
+
+def _norm_color_label(raw: str) -> str:
+    """
+    UI inputlarında GOLD/SILVER/ROSE gibi değerleri Etsy display label'a çevirir.
+    Önemli: Payload'ta artık G/S/R gibi code göndermiyoruz; sadece display label.
+    """
+    s = (raw or "").strip()
+    if not s or s == "-":
+        return ""
+
+    u = s.upper().strip()
+    if u == "GOLD":
+        return "Gold"
+    if u == "SILVER":
+        return "Silver"
+    if u in ("ROSE", "ROSE GOLD", "ROSEGOLD"):
+        # Template'lerinde genelde "Rose" görünüyor; gerekiyorsa "Rose gold" da yapılabilir.
+        return "Rose"
+    return s.strip()
+
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in items:
+        if not x:
+            continue
+        k = x.strip()
+        if not k:
+            continue
+        if k.lower() in seen:
+            continue
+        seen.add(k.lower())
+        out.append(k)
+    return out
+
+
 def parse_workshop_text_to_payload(workshop_text: str) -> dict:
     """
     Minimal parser for WhatsApp style text.
-    Finds listing_id from:
-      - Etsy edit URL (/edit/<id>)
-      - "listing id: <id>" or "id: <id>"
+    - Sonuna JSON override bloğu eklenebilir; parse edilip payload'a merge edilir.
+    - listing_id Etsy edit URL (/edit/<id>) veya "listing id: <id>" / "id: <id>"
+    - Type, Size, Color, Length, Quantity, Space, Start, pricing_by, Price block
 
-    Parses:
-      Type, Size, Color, Length, Quantity, Space, Start, Price block
-    Price:
-      - "Price: $82" => fixed price
-      - "Gold - $82" => color_prices
-      - "1 taki - $58" => prices (by qty string)
+    PAYLOAD RULES (fixed here):
+    - "colors" MUST be a list of display labels: ["Gold","Silver","Rose"]
+    - "pricing_labels" MUST contain ONLY display labels as keys (no G/S/R)
     """
     import re
 
-    txt = (workshop_text or "").strip()
-    if not txt:
+    txt_raw = (workshop_text or "").strip()
+    if not txt_raw:
         raise ValueError("Empty input.")
+
+    txt, overrides = _extract_json_block(txt_raw)
 
     listing_id = None
     m = re.search(r"/edit/(\d+)", txt)
@@ -120,7 +220,7 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
         if m2:
             listing_id = int(m2.group(2))
 
-    data = {}
+    data: Dict[str, str] = {}
     for line in txt.splitlines():
         line = line.strip()
         if not line:
@@ -128,9 +228,18 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
         if ":" in line:
             k, v = line.split(":", 1)
             k = k.strip().lower()
-            v = v.strip()
-            if k in ("type", "size", "color", "length", "quantity", "space", "start", "price", "listing id", "id"):
+            v = v.strip().rstrip(",")  # sondaki virgülleri temizle
+            if k in (
+                "type", "size", "color", "length", "quantity", "space", "start", "price",
+                "listing id", "id", "pricing_by", "pricing by"
+            ):
                 data[k] = v
+
+        # "pricing_by : color" gibi yazımları yakala
+        if "pricing_by" not in data and "pricing by" not in data:
+            mm = re.match(r"^\s*pricing_by\s*[:=]\s*(.+)$", line, re.IGNORECASE)
+            if mm:
+                data["pricing_by"] = mm.group(1).strip().rstrip(",")
 
     if listing_id is None and "id" in data:
         try:
@@ -146,9 +255,6 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
     if not listing_id:
         raise ValueError("Listing ID not found. Paste Etsy edit URL or add 'listing id: ...'")
 
-    def split_csv(v: str):
-        return [x.strip() for x in (v or "").split(",") if x.strip()]
-
     type_name = (data.get("type") or "").strip()
     if not type_name:
         raise ValueError("Type missing.")
@@ -157,35 +263,22 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
     space = (data.get("space") or "-").strip() or "-"
     start = (data.get("start") or "-").strip() or "-"
 
-    # Colors -> default mapping for GOLD/SILVER/ROSE
-    colors_list = split_csv(data.get("color", "")) if data.get("color") else []
-    colors_map = {}
-    for c in colors_list:
-        cl = c.strip().upper()
-        if cl == "GOLD":
-            colors_map["G"] = "Gold"
-        elif cl == "SILVER":
-            colors_map["S"] = "Silver"
-        elif cl in ("ROSE", "ROSE GOLD"):
-            colors_map["R"] = "Rose"
-        elif cl == "-":
-            continue
-        else:
-            code = (cl[:1] or "X")
-            colors_map[code] = c.strip()
+    # Colors: input'tan liste çıkar -> display labels listesi üret
+    colors_list_raw = _split_csv(data.get("color", "")) if data.get("color") else []
+    colors_list = _dedupe_preserve_order([_norm_color_label(c) for c in colors_list_raw if c and c.strip() != "-"])
 
-    if not colors_map:
-        colors_map = {"G": "Gold", "S": "Silver", "R": "Rose"}
+    if not colors_list:
+        colors_list = ["Gold", "Silver", "Rose"]
 
-    lengths = split_csv(data.get("length", "")) if data.get("length") else []
-    quantities = split_csv(data.get("quantity", "")) if data.get("quantity") else []
+    lengths = _split_csv(data.get("length", "")) if data.get("length") else []
+    quantities = _split_csv(data.get("quantity", "")) if data.get("quantity") else []
     if len(quantities) == 1 and quantities[0] == "-":
         quantities = []
     if len(lengths) == 1 and lengths[0] == "-":
         lengths = []
 
     # ---- price block ----
-    price_block = []
+    price_block: List[str] = []
     in_price = False
     for line in txt.splitlines():
         s = line.strip()
@@ -195,18 +288,18 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
             in_price = True
             if ":" in s:
                 maybe = s.split(":", 1)[1].strip()
-                if maybe:
+                if maybe and maybe != "-":
                     price_block.append(maybe)
             continue
         if in_price:
-            # stop when another "Key:" starts (Type:, Size:, etc.)
-            if re.match(r"^(type|size|color|length|quantity|space|start)\s*:", s, re.IGNORECASE):
+            # başka bir "Key:" geldiğinde dur
+            if re.match(r"^(type|size|color|length|quantity|space|start|pricing_by|pricing by)\s*:", s, re.IGNORECASE):
                 break
             price_block.append(s)
 
-    fixed_price = None
-    prices_by_qty = {}
-    color_prices = {}
+    fixed_price: Optional[float] = None
+    prices_by_qty: Dict[str, float] = {}
+    pricing_labels: Dict[str, float] = {}  # ONLY display labels (no code keys)
 
     for pb in price_block:
         pb2 = pb.replace(",", ".").strip()
@@ -222,38 +315,49 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
             continue
         left = m3.group(1).strip()
         val = float(m3.group(2))
-        left_u = left.upper()
-        if left_u in ("GOLD", "SILVER", "ROSE", "ROSE GOLD"):
-            if left_u == "GOLD":
-                color_prices["G"] = val
-                color_prices["Gold"] = val
-            elif left_u == "SILVER":
-                color_prices["S"] = val
-                color_prices["Silver"] = val
-            else:
-                color_prices["R"] = val
-                color_prices["Rose"] = val
+
+        left_u = left.upper().strip()
+        if left_u in ("GOLD", "SILVER", "ROSE", "ROSE GOLD", "ROSEGOLD"):
+            label = _norm_color_label(left)
+            if label:
+                pricing_labels[label] = val
         else:
+            # qty veya başka bir label olabilir
             prices_by_qty[left] = val
 
-    payload = {
+    pricing_by = (data.get("pricing_by") or data.get("pricing by") or "").strip().lower().rstrip(",")
+    if pricing_by not in ("", "color", "length", "qty"):
+        pricing_by = ""
+
+    payload: Dict[str, Any] = {
         "listing_id": listing_id,
         "type": type_name,
         "size": size,
         "space": space,
         "start": start,
-        "colors": colors_map,
+        "colors": colors_list,            # <-- FIXED (list)
         "lengths_inch": lengths,
-        "quantities": quantities,
+        "quantity": ", ".join(quantities) if quantities else "-",
         "stock": 900,
     }
+
+    if pricing_by:
+        payload["pricing_by"] = pricing_by
+
     if fixed_price is not None:
         payload["price"] = fixed_price
+
     if prices_by_qty:
         payload["prices"] = prices_by_qty
-    if color_prices:
-        payload["color_prices"] = color_prices
 
+    if pricing_labels:
+        # Sadece display label key'leri; ayrıca input colors ile tutarlı olsun diye filtrele
+        # (UI bazen fazla satır yazabiliyor)
+        allowed = {c.lower() for c in colors_list}
+        payload["pricing_labels"] = {k: float(v) for k, v in pricing_labels.items() if k.lower() in allowed}
+        payload["pricing_by"] = payload.get("pricing_by") or "color"
+
+    payload = _merge_overrides(payload, overrides)
     return payload
 
 
@@ -283,7 +387,6 @@ async def health():
     }
 
 
-# --------- Script'siz server-side akış (index.html form action="/run") ---------
 @app.post("/run", response_class=HTMLResponse)
 async def run_page(
     request: Request,
@@ -294,12 +397,10 @@ async def run_page(
     ensure_runner_exists()
     is_dry = bool(dry_run)
 
-    # Parser listing_id'yi metinden de bulabilsin diye: metinde yoksa ekle
     wt = (workshop_text or "").strip()
     if wt and ("/edit/" not in wt) and ("listing id" not in wt.lower()) and ("id:" not in wt.lower()):
         wt = "listing id: %s\n%s" % (listing_id, wt)
 
-    # payload üret
     try:
         payload = parse_workshop_text_to_payload(wt)
     except Exception as e:
@@ -318,7 +419,6 @@ async def run_page(
 
     ts = int(time.time())
     input_path = INPUTS_DIR / ("input_%s_%s.json" % (payload["listing_id"], ts))
-
     input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     cmd = [shutil.which("python") or "python", "-u", str(RUNNER), str(input_path)]
@@ -345,7 +445,6 @@ async def run_page(
     )
 
 
-# --------- JSON API (istersen ileride JS ile kullanırsın) ---------
 @app.post("/api/preview")
 async def api_preview(workshop_text: str = Form(...), debug: Optional[bool] = Form(False)):
     ensure_runner_exists()
@@ -355,7 +454,7 @@ async def api_preview(workshop_text: str = Form(...), debug: Optional[bool] = Fo
         raise HTTPException(status_code=400, detail=str(e))
 
     ts = int(time.time())
-    input_path = INPUTS_DIR / "input_%s_%s.json" % (payload["listing_id"], ts)
+    input_path = INPUTS_DIR / ("input_%s_%s.json" % (payload["listing_id"], ts))
     input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     cmd = [shutil.which("python") or "python", "-u", str(RUNNER), str(input_path), "--dry-run"]
@@ -384,9 +483,7 @@ async def api_run(workshop_text: str = Form(...), debug: Optional[bool] = Form(F
 
     ts = int(time.time())
     input_path = INPUTS_DIR / ("input_%s_%s.json" % (payload["listing_id"], ts))
-
     input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    
 
     cmd = [shutil.which("python") or "python", "-u", str(RUNNER), str(input_path)]
     if debug:
