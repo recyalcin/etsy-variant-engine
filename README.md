@@ -347,10 +347,13 @@ Recep Yalcin
 
 ## 💡 Override Examples
 
+json ```
 {
+
   "component_overrides": {
     "54142602013": ["length"]
   },
+
   "display_value_overrides_by_property": {
     "513": {
       "color": {
@@ -375,18 +378,23 @@ Recep Yalcin
       }
     }
   }
+  
 }
+```
+Another example:
 
----
-
+json ```
 {
+
   "component_overrides": {
     "47626759838": ["length"]
   },
+
   "delim_overrides": {
     "513": " - "
   },
 
+  "display_value_overrides_by_property": {
     "47626759838": {
       "length": {
         "14\"": "14",
@@ -395,7 +403,7 @@ Recep Yalcin
         "20\"": "20",
         "22\"": "22",
 
-    "14 inches": "14",
+        "14 inches": "14",
         "16 inches": "16",
         "18 inches": "18",
         "20 inches": "20",
@@ -403,26 +411,37 @@ Recep Yalcin
       }
     }
   }
+
 }
+```
 
----
+Another example:
 
+json ```
 {
+
   "display_value_overrides": {
     "color": {
       "Rose": "Rose Gold",
       "ROSE": "Rose Gold"
     }
   }
-}
 
+}
+```
+
+Another example:
+json ```
 {
+
   "component_overrides": {
     "513": ["color", "qty"]
   },
+
   "delim_overrides": {
     "513": " - "
   },
+
   "display_value_overrides_by_property": {
     "513": {
       "qty": {
@@ -434,6 +453,7 @@ Recep Yalcin
       }
     }
   },
+
   "display_value_overrides": {
     "color": {
       "GOLD": "Gold",
@@ -441,9 +461,11 @@ Recep Yalcin
       "ROSE": "Rose"
     }
   }
-}
 
----
+}
+```
+
+
 
 {
   "component_overrides": {
