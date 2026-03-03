@@ -347,7 +347,7 @@ Recep Yalcin
 
 ## 💡 Override Examples
 
-json ```
+```json
 {
 
   "component_overrides": {
@@ -378,12 +378,12 @@ json ```
       }
     }
   }
-  
+
 }
 ```
 Another example:
 
-json ```
+```json
 {
 
   "component_overrides": {
@@ -417,7 +417,7 @@ json ```
 
 Another example:
 
-json ```
+```json
 {
 
   "display_value_overrides": {
@@ -431,7 +431,7 @@ json ```
 ```
 
 Another example:
-json ```
+```json
 {
 
   "component_overrides": {
@@ -464,16 +464,19 @@ json ```
 
 }
 ```
+Another example:
 
-
-
+```json
 {
+
   "component_overrides": {
     "513": ["color", "qty"]
   },
+
   "delim_overrides": {
     "513": " - "
   },
+
   "display_value_overrides_by_property": {
     "513": {
       "qty": {
@@ -485,6 +488,7 @@ json ```
       }
     }
   },
+
   "display_value_overrides": {
     "color": {
       "GOLD": "Gold",
@@ -492,4 +496,5 @@ json ```
       "ROSE": "Rose"
     }
   }
+
 }
