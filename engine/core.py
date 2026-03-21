@@ -372,23 +372,31 @@ def build_and_push(profile, payload: Dict[str, Any], dry_run: bool) -> None:
         workshop_color_labels = []
 
     # ------------------- WORKSHOP QTY INPUT (empty/single/multi) -------------------
-    raw_qty = payload.get("quantity") or payload.get("Quantity")
-    if raw_qty is None:
-        raw_qty = payload.get("qty") or payload.get("Qty") or payload.get("sku_qty") or payload.get("sku_quantity")
+    raw_quantities = [str(x).strip() for x in ensure_list(payload.get("quantities")) if str(x).strip() and str(x).strip() != "-"]
 
-    qty_items = parse_workshop_csv_list(raw_qty) if raw_qty is not None else []
-
-    if not qty_items:
-        effective_qty = "-"
-        quantities_in: List[str] = []
-    elif len(qty_items) == 1:
-        effective_qty = qty_items[0] or "-"
-        quantities_in = []
+    if raw_quantities:
+        if len(raw_quantities) == 1:
+            effective_qty = raw_quantities[0]
+            quantities_in: List[str] = []
+        else:
+            effective_qty = "-"
+            quantities_in = raw_quantities
     else:
-        effective_qty = "-"
-        quantities_in = [q for q in qty_items if q and q != "-"]
+        raw_qty = payload.get("quantity") or payload.get("Quantity")
+        if raw_qty is None:
+            raw_qty = payload.get("qty") or payload.get("Qty") or payload.get("sku_qty") or payload.get("sku_quantity")
 
-    qty_numbers = payload.get("qty_numbers", {})
+        qty_items = parse_workshop_csv_list(raw_qty) if raw_qty is not None else []
+
+        if not qty_items:
+            effective_qty = "-"
+            quantities_in = []
+        elif len(qty_items) == 1:
+            effective_qty = qty_items[0] or "-"
+            quantities_in = []
+        else:
+            effective_qty = "-"
+            quantities_in = [q for q in qty_items if q and q != "-"]
 
     # ------------------- WORKSHOP LENGTH INPUT -------------------
     raw_len_single = payload.get("length") or payload.get("Length")
@@ -634,6 +642,12 @@ def build_and_push(profile, payload: Dict[str, Any], dry_run: bool) -> None:
         "quantity_on_property": [],
         "sku_on_property": prop_ids,
     }
+
+    safe_print("[DEBUG] payload.quantities = %s" % json.dumps(payload.get("quantities"), ensure_ascii=False))
+    safe_print("[DEBUG] payload.quantity = %s" % json.dumps(payload.get("quantity"), ensure_ascii=False))
+    safe_print("[DEBUG] applied_component_overrides = %s" % json.dumps(comp_over, ensure_ascii=False))
+    safe_print("[DEBUG] applied_display_value_overrides_by_property = %s" % json.dumps(display_overrides_by_prop, ensure_ascii=False))
+    safe_print("[DEBUG] effective_qty = %s | quantities_in = %s" % (repr(effective_qty), repr(quantities_in)))
 
     safe_print("[INFO] PUT overwrite products: %s" % len(products_out))
     safe_print("[INFO] readiness_state_id: %s" % rs_id)
