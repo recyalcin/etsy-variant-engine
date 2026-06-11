@@ -296,7 +296,19 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
     if not type_name:
         raise ValueError("Type missing.")
 
-    size = (data.get("size") or "-").strip() or "-"
+    size_raw = (data.get("size") or "-").strip() or "-"
+    size_items = _dedupe_preserve_order(
+        [s for s in _split_csv(data.get("size", "")) if s and s.strip() != "-"]
+    ) if data.get("size") else []
+    if len(size_items) == 1:
+        size = size_items[0]
+        sizes = []
+    elif len(size_items) > 1:
+        size = "-"
+        sizes = size_items
+    else:
+        size = size_raw
+        sizes = []
     space = (data.get("space") or "-").strip() or "-"
     start = (data.get("start") or "-").strip() or "-"
 
@@ -343,7 +355,7 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
             price_block.append(s)
 
     fixed_price: Optional[float] = None
-    prices_by_qty: Dict[str, float] = {}
+    prices_by_label: Dict[str, float] = {}
     pricing_labels: Dict[str, float] = {}
 
     for pb in price_block:
@@ -374,10 +386,10 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
             if label:
                 pricing_labels[label] = val
         else:
-            prices_by_qty[left] = val
+            prices_by_label[left] = val
 
     pricing_by = (data.get("pricing_by") or data.get("pricing by") or "").strip().lower().rstrip(",").strip('"').strip("'")
-    if pricing_by not in ("", "fixed", "color", "qty"):
+    if pricing_by not in ("", "fixed", "color", "qty", "size", "length"):
         pricing_by = ""
 
     payload: Dict[str, Any] = {
@@ -392,6 +404,8 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
         # "quantity": ", ".join(quantities) if quantities else "-",
         "stock": 900,
     }
+    if sizes:
+        payload["sizes"] = sizes
 
     if pricing_labels:
         allowed = {c.lower() for c in colors_list}
@@ -400,22 +414,37 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
             k: float(v) for k, v in pricing_labels.items() if k.lower() in allowed
         }
 
-    elif prices_by_qty:
-        payload["pricing_by"] = pricing_by or "qty"
+    elif prices_by_label:
+        resolved_pricing_by = pricing_by
+        if not resolved_pricing_by:
+            if quantities:
+                resolved_pricing_by = "qty"
+            elif sizes or (size and size != "-"):
+                resolved_pricing_by = "size"
+            elif lengths:
+                resolved_pricing_by = "length"
 
-        qty_display_map = (
-            overrides.get("display_value_overrides_by_property", {})
-            .get("514", {})
-            .get("qty", {})
-        )
+        if resolved_pricing_by == "qty" or not resolved_pricing_by:
+            payload["pricing_by"] = resolved_pricing_by or "qty"
 
-        normalized_pricing = {}
-        for k, v in prices_by_qty.items():
-            raw_key = str(k).strip()
-            display_key = qty_display_map.get(raw_key, raw_key)
-            normalized_pricing[display_key] = float(v)
+            qty_display_map = (
+                overrides.get("display_value_overrides_by_property", {})
+                .get("514", {})
+                .get("qty", {})
+            )
 
-        payload["pricing"] = normalized_pricing
+            normalized_pricing = {}
+            for k, v in prices_by_label.items():
+                raw_key = str(k).strip()
+                display_key = qty_display_map.get(raw_key, raw_key)
+                normalized_pricing[display_key] = float(v)
+
+            payload["pricing"] = normalized_pricing
+        elif resolved_pricing_by in ("size", "length"):
+            payload["pricing_by"] = resolved_pricing_by
+            payload["pricing"] = {
+                str(k).strip(): float(v) for k, v in prices_by_label.items()
+            }
 
     elif fixed_price is not None:
         payload["pricing_by"] = pricing_by or "fixed"

@@ -258,6 +258,25 @@ Supported pricing_by:
 * color
 * qty
 * length
+* size
+
+Size-based example:
+
+```txt
+Type : Mineli 250 disc kolye
+Size : 15mm, 20mm
+Color : GOLD, SILVER, ROSE
+Length : 14", 16", 18", 20"
+Quantity : -
+Space : -
+Start : ortada
+
+Price :
+15mm - $45
+20mm - $55
+
+pricing_by : size
+```
 
 Example:
 

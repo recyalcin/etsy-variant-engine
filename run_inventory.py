@@ -3,9 +3,10 @@
 #
 # Supports:
 # - color -> DB code in SKU
+# - size variation + size-based pricing
 # - scale-property PUT meta copy (scale_id/value_ids/ott_value_qualifier if present)
 # - component_overrides by property_id
-# - display_value_overrides_by_property by property_id OR semantic role (qty/color/length)
+# - display_value_overrides_by_property by property_id OR semantic role (qty/color/length/size)
 # - inline overrides in input values: "RAW::ETSY" or "RAW=>ETSY"
 # - force SKU qty segment even if Etsy template doesn't expose qty as a property
 # - payload logging for Postman
@@ -222,6 +223,19 @@ def _is_plain_number(x: str) -> bool:
 def is_code_like(s: str, expected_len: int) -> bool:
     s = (s or "").strip()
     return (len(s) == expected_len) and all(ch in ALNUM for ch in s)
+
+
+def ensure_list(v: Any) -> List[Any]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    if isinstance(v, (tuple, set)):
+        return list(v)
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else []
+    return [v]
 
 
 def strip_option_word(s: str) -> str:
@@ -478,16 +492,26 @@ def looks_like_length_token(t: str) -> bool:
         return True
     return False
 
+def looks_like_size_token(t: str) -> bool:
+    tl = norm_tr(html.unescape(t))
+    return bool(re.fullmatch(r"\d+(\.\d+)?\s*mm", tl))
 
-def classify_token(tok: str, color_set_lower: Set[str], length_set_lower: Set[str]) -> str:
+
+def classify_token(tok: str, color_set_lower: Set[str], length_set_lower: Set[str], property_name: str = "") -> str:
     t = html.unescape((tok or "").strip())
     tl = t.lower()
     tl = tl.replace("″", '"').replace("”", '"').replace("“", '"')
     tl_clean = strip_option_word(tl)
+    pname = norm_tr(property_name or "")
 
     for c in color_set_lower:
         if c and c in tl_clean:
             return "color"
+
+    if "size" in pname and looks_like_size_token(tl_clean):
+        return "size"
+    if looks_like_size_token(tl_clean) and "length" not in pname:
+        return "size"
 
     if tl_clean in length_set_lower:
         return "length"
@@ -624,9 +648,9 @@ def analyze_template(inv: Dict[str, Any], color_set_lower: Set[str], length_set_
             if delim and samples_dec:
                 rep = next((s for s in samples_dec if delim in s), samples_dec[0])
                 parts = [x.strip() for x in rep.split(delim) if x.strip()]
-                comps = [classify_token(part, color_set_lower, length_set_lower) for part in parts]
+                comps = [classify_token(part, color_set_lower, length_set_lower, pname) for part in parts]
             else:
-                comps = [classify_token(samples_dec[0], color_set_lower, length_set_lower)] if samples_dec else ["unknown"]
+                comps = [classify_token(samples_dec[0], color_set_lower, length_set_lower, pname)] if samples_dec else ["unknown"]
 
         comps = normalize_components(comps)
         comps = apply_component_override(pid, comps, payload)
@@ -784,9 +808,11 @@ def build_property_value(
             return apply_override("length", strip_option_word(ctx.get("length_label", "")))
         if role == "qty":
             return apply_override("qty", strip_option_word(ctx.get("qty_label", "")))
+        if role == "size":
+            return apply_override("size", strip_option_word(ctx.get("size_label", "")))
         if role == "unknown" and ctx.get("length_label"):
             return apply_override("length", strip_option_word(ctx.get("length_label", "")))
-        return strip_option_word(ctx.get("color_label") or ctx.get("length_label") or ctx.get("qty_label") or "")
+        return strip_option_word(ctx.get("color_label") or ctx.get("length_label") or ctx.get("qty_label") or ctx.get("size_label") or "")
 
     if d and len(comps) >= 2:
         parts = [val(r) for r in comps]
@@ -969,6 +995,28 @@ def resolve_length_code(profile: Profile, length_raw: str, i_length_rows: List[D
     return upsert_by_desc_schema("i_length", raw, profile.length_len, desc2_value=desc2_value)
 
 
+def resolve_size_code(profile: Profile, size_raw: str, i_size_rows: List[Dict[str, Any]]) -> str:
+    raw = str(size_raw or "").strip()
+    if not raw or raw == "-":
+        return upsert_by_desc_schema("i_size", "-", profile.size_len)
+
+    target = norm_tr(raw)
+
+    for r in i_size_rows:
+        if norm_tr(r.get("desc") or "") == target:
+            DB_ACTIONS.append({"action": "EXISTS", "table": "i_size", "desc": raw, "code": r["code"], "match": "desc"})
+            return str(r["code"])
+
+    if any("desc2" in r for r in i_size_rows):
+        for r in i_size_rows:
+            d2 = (r.get("desc2") or "").strip()
+            if d2 and d2 != "-" and norm_tr(d2) == target:
+                DB_ACTIONS.append({"action": "EXISTS", "table": "i_size", "desc2": raw, "code": r["code"], "match": "desc2"})
+                return str(r["code"])
+
+    return upsert_by_desc_schema("i_size", raw, profile.size_len)
+
+
 def resolve_color_code(profile: Profile, workshop_color_label: str, i_color_rows: List[Dict[str, Any]]) -> str:
     raw = (workshop_color_label or "").strip()
     if not raw:
@@ -1015,6 +1063,10 @@ def calc_price(
     qty_n: Optional[int],
     color_label: Optional[str] = None,
     qty_label: Optional[str] = None,
+    length_code: Optional[str] = None,
+    length_label: Optional[str] = None,
+    size_code: Optional[str] = None,
+    size_label: Optional[str] = None,
 ) -> float:
     pricing_by_raw = payload.get("pricing_by")
     pricing = payload.get("pricing")
@@ -1060,6 +1112,31 @@ def calc_price(
             f"pricing_by=color but no matching price found for color_code={color_code!r}, color_label={color_label!r}"
         )
 
+    if pricing_by == "length":
+        if not isinstance(pricing, dict) or not pricing:
+            raise ValueError("pricing_by=length requires pricing to be a non-empty object")
+
+        if length_label and length_label in pricing:
+            return float(pricing[length_label])
+
+        if length_code and length_code in pricing:
+            return float(pricing[length_code])
+
+        if length_label:
+            wanted = {
+                str(length_label).strip().lower(),
+                normalize_numeric(str(length_label)),
+            }
+            for k, v in pricing.items():
+                key_norm = str(k).strip().lower()
+                key_num = normalize_numeric(str(k))
+                if key_norm in wanted or key_num in wanted:
+                    return float(v)
+
+        raise ValueError(
+            f"pricing_by=length but no matching price found for length_code={length_code!r}, length_label={length_label!r}"
+        )
+
     if pricing_by == "qty":
         if not isinstance(pricing, dict) or not pricing:
             raise ValueError("pricing_by=qty requires pricing to be a non-empty object")
@@ -1088,6 +1165,26 @@ def calc_price(
 
         raise ValueError(
             f"pricing_by=qty but no matching price found for qty_label={qty_label!r}, qty={qty_n!r}"
+        )
+
+    if pricing_by == "size":
+        if not isinstance(pricing, dict) or not pricing:
+            raise ValueError("pricing_by=size requires pricing to be a non-empty object")
+
+        if size_label and size_label in pricing:
+            return float(pricing[size_label])
+
+        if size_code and size_code in pricing:
+            return float(pricing[size_code])
+
+        if size_label:
+            size_label_norm = str(size_label).strip().lower()
+            for k, v in pricing.items():
+                if str(k).strip().lower() == size_label_norm:
+                    return float(v)
+
+        raise ValueError(
+            f"pricing_by=size but no matching price found for size_code={size_code!r}, size_label={size_label!r}"
         )
 
     raise ValueError(f"Unknown pricing_by value: {pricing_by!r}")
@@ -1169,6 +1266,7 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
     safe_print("[STEP] loading db tables ...")
     i_color_rows = load_table("i_color")
     i_length_rows = load_table("i_length")
+    i_size_rows = load_table("i_size")
 
     color_field = "desc" if profile.name == "silveristic" else choose_label_field(i_color_rows)
     length_field = choose_label_field(i_length_rows)
@@ -1186,19 +1284,20 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
     ],))
 
     qty_prop = next((p for p in props if "qty" in (p.get("components") or [])), None)
+    size_prop = next((p for p in props if "size" in (p.get("components") or [])), None)
     qty_is_count = False
     if qty_prop:
         sv = qty_prop.get("sample_values") or []
         qty_is_count = any(NUM_PREFIX.match(strip_option_word(html.unescape(x or "")).strip()) for x in sv)
 
     type_code = resolve_type_code(profile, payload.get("type", "-"))
-    size_code = upsert_by_desc_schema("i_size", payload.get("size", "-"), profile.size_len)
     space_code = upsert_by_desc_schema("i_space", payload.get("space", "-"), profile.space_len) if norm_tr(payload.get("space", "-")) in ("", "-", "0") else resolve_space_code(profile, payload.get("space", "-"))
     start_code = upsert_by_desc_schema("i_start", payload.get("start", "ortada"), profile.start_len)
 
     needs_color = any("color" in (p.get("components") or []) for p in props)
     needs_length = any("length" in (p.get("components") or []) for p in props)
     needs_qty = any("qty" in (p.get("components") or []) for p in props)
+    needs_size = any("size" in (p.get("components") or []) for p in props)
 
     display_overrides = payload.get("display_value_overrides") or {}
     display_overrides_by_prop = payload.get("display_value_overrides_by_property") or {}
@@ -1273,6 +1372,42 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
 
             length_label_map[rawL0] = length_label
 
+    # ------------------- SIZE INPUT -------------------
+    size_raw_single = payload.get("size") or payload.get("Size")
+    size_single = (str(size_raw_single).strip() if size_raw_single is not None else "").strip() or "-"
+    sizes_in = [str(x).strip() for x in ensure_list(payload.get("sizes", payload.get("Sizes", []))) if str(x).strip() and str(x).strip() != "-"]
+    if not sizes_in and size_single not in ("", "-") and needs_size:
+        sizes_in = [size_single]
+
+    size_code_map: Dict[str, str] = {}
+    size_label_map: Dict[str, str] = {}
+    fixed_size_code_part = resolve_size_code(profile, size_single, i_size_rows)
+
+    if needs_size:
+        if not sizes_in:
+            raise ValueError("Template needs size but input sizes empty")
+
+        for sraw0 in sizes_in:
+            sraw0 = str(sraw0)
+            s_workshop, s_inline_override = split_override_label(sraw0)
+
+            size_code_map[sraw0] = resolve_size_code(profile, s_workshop, i_size_rows)
+
+            s_label = s_inline_override or s_workshop
+            if size_prop:
+                sovr = resolve_display_override(payload, role="size", property_id=int(size_prop["property_id"]), raw_value=s_workshop)
+                if sovr:
+                    s_label = sovr
+
+            size_label_map[sraw0] = s_label
+    elif sizes_in:
+        if len(sizes_in) > 1:
+            raise ValueError(
+                f"Listing template has no size variation, but input provides multiple sizes: {sizes_in}. "
+                "Either add size variation on Etsy or provide a single fixed size."
+            )
+        fixed_size_code_part = resolve_size_code(profile, sizes_in[0], i_size_rows)
+
     # ------------------- QTY INPUT -------------------
     quantities_in = payload.get("quantities", [])
     qty_numbers = payload.get("qty_numbers", {})
@@ -1338,10 +1473,11 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
     colors_iter = workshop_color_labels if needs_color else ["X"]
     lengths_iter = [str(x) for x in lengths_in] if needs_length else [None]
     qty_iter = quantities_in if needs_qty else [None]
+    size_iter = sizes_in if needs_size else [None]
 
     products_out: List[Dict[str, Any]] = []
 
-    for workshop_color_label, L_raw0, qraw0 in product(colors_iter, lengths_iter, qty_iter):
+    for workshop_color_label, L_raw0, qraw0, sraw0 in product(colors_iter, lengths_iter, qty_iter, size_iter):
         # COLOR
         if needs_color:
             c_workshop = str(workshop_color_label)
@@ -1364,6 +1500,13 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
             length_label = length_label_map[str(L_raw0)]
             len_code_part = length_code_map[str(L_raw0)]
 
+        # SIZE
+        size_label = ""
+        size_code_part = fixed_size_code_part
+        if needs_size and sraw0 is not None:
+            size_label = size_label_map[str(sraw0)]
+            size_code_part = size_code_map[str(sraw0)]
+
         # QTY
         qty_label = ""
         qty_code_part = ("0" * profile.qty_len)
@@ -1384,12 +1527,17 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
             qty_n,
             color_label=color_label_for_ctx,
             qty_label=qty_label,
+            length_code=len_code_part,
+            length_label=length_label,
+            size_code=size_code_part,
+            size_label=size_label,
         )
 
         ctx = {
             "color_label": color_label_for_ctx,
             "length_label": length_label,
             "qty_label": qty_label,
+            "size_label": size_label,
         }
 
         pv_list = []
@@ -1420,7 +1568,7 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
             "length": len_code_part,
             "color": c_code,
             "qty": qty_code_part,
-            "size": size_code,
+            "size": size_code_part,
             "start": start_code,
             "space": space_code,
         }
