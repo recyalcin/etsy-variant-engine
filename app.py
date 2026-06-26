@@ -427,11 +427,16 @@ def parse_workshop_text_to_payload(workshop_text: str) -> dict:
         if resolved_pricing_by == "qty" or not resolved_pricing_by:
             payload["pricing_by"] = resolved_pricing_by or "qty"
 
-            qty_display_map = (
-                overrides.get("display_value_overrides_by_property", {})
-                .get("514", {})
-                .get("qty", {})
-            )
+            qty_display_map: Dict[str, str] = {}
+            per_prop_root = overrides.get("display_value_overrides_by_property", {})
+            if isinstance(per_prop_root, dict):
+                for per_prop in per_prop_root.values():
+                    if not isinstance(per_prop, dict):
+                        continue
+                    per_qty = per_prop.get("qty")
+                    if isinstance(per_qty, dict):
+                        for raw_key, display_value in per_qty.items():
+                            qty_display_map[str(raw_key).strip()] = str(display_value).strip()
 
             normalized_pricing = {}
             for k, v in prices_by_label.items():

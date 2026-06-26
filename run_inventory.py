@@ -1152,7 +1152,38 @@ def calc_price(
                 if str(k).strip().lower() == qty_label_norm:
                     return float(v)
 
-        # 3) fallback numeric qty match
+        # 3) raw workshop pricing key -> override -> Etsy label fallback
+        if qty_label:
+            qty_label_norm = str(qty_label).strip().lower()
+            per_prop_root = payload.get("display_value_overrides_by_property") or {}
+            if isinstance(per_prop_root, dict):
+                for raw_key, raw_price in pricing.items():
+                    raw_key_str = str(raw_key).strip()
+                    matched = False
+                    for per_prop in per_prop_root.values():
+                        if not isinstance(per_prop, dict):
+                            continue
+                        per_qty = per_prop.get("qty")
+                        if not isinstance(per_qty, dict):
+                            continue
+
+                        mapped = per_qty.get(raw_key_str)
+                        if mapped and str(mapped).strip().lower() == qty_label_norm:
+                            matched = True
+                            break
+
+                        raw_key_norm = raw_key_str.lower()
+                        for k_map, v_map in per_qty.items():
+                            if str(k_map).strip().lower() == raw_key_norm and str(v_map).strip().lower() == qty_label_norm:
+                                matched = True
+                                break
+                        if matched:
+                            break
+
+                    if matched:
+                        return float(raw_price)
+
+        # 4) fallback numeric qty match
         if qty_n is not None:
             qty_key = str(qty_n)
 
