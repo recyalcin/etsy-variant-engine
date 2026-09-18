@@ -6,6 +6,7 @@ from .utils import require_env
 from .config import ETSY_API
 
 ETSY_TOKEN_CACHE = {"access_token": None, "expires_at": 0.0}
+MAX_VARIATIONS_SUPPORTED = 3
 
 def refresh_access_token(debug: bool = False) -> str:
     api_key = require_env("ETSY_API_KEY")
@@ -60,7 +61,13 @@ def get_inventory(listing_id: int) -> Dict[str, Any]:
 
 def put_inventory_overwrite(listing_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{ETSY_API}/v3/application/listings/{listing_id}/inventory"
-    r = etsy_request("PUT", url, json=payload, timeout=140)
+    r = etsy_request(
+        "PUT",
+        url,
+        params={"max_variations_supported": MAX_VARIATIONS_SUPPORTED},
+        json=payload,
+        timeout=140,
+    )
     if not r.ok:
         raise RuntimeError(f"[ETSY][PUT][ERROR] status={r.status_code} body={r.text[:4000]}")
     return r.json()

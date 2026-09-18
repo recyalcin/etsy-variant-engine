@@ -38,6 +38,7 @@ except Exception:
     pass
 
 ETSY_API = "https://api.etsy.com"
+MAX_VARIATIONS_SUPPORTED = 3
 ALNUM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 DELIMS = [" / ", " - ", " | ", "/", "-"]
 NUM_PREFIX = re.compile(r"^\s*(\d+)\s+(.*\S)\s*$")
@@ -335,7 +336,13 @@ def get_inventory(listing_id: int) -> Dict[str, Any]:
 
 def put_inventory_overwrite(listing_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     url = "%s/v3/application/listings/%s/inventory" % (ETSY_API, listing_id)
-    r = etsy_request("PUT", url, json=payload, timeout=140)
+    r = etsy_request(
+        "PUT",
+        url,
+        params={"max_variations_supported": MAX_VARIATIONS_SUPPORTED},
+        json=payload,
+        timeout=140,
+    )
     if not r.ok:
         safe_print("[ETSY][PUT][ERROR] status: %s" % r.status_code)
         safe_print("[ETSY][PUT][ERROR] body: %s" % r.text[:4000])
@@ -1251,6 +1258,29 @@ def summarize_db_plan(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+def property_ids_for_pricing(props: List[Dict[str, Any]], pricing_by: Any) -> List[int]:
+    """Return Etsy property IDs that the generated prices actually vary on."""
+    role = str(pricing_by or "").strip().lower()
+    if role == "fixed":
+        return []
+
+    supported_roles = {"color", "length", "qty", "size"}
+    if role not in supported_roles:
+        raise ValueError("Unknown pricing_by value: %r" % role)
+
+    property_ids = [
+        int(prop["property_id"])
+        for prop in props
+        if prop.get("property_id") is not None
+        and role in (prop.get("components") or [])
+    ]
+    if not property_ids:
+        raise ValueError(
+            "pricing_by=%s does not match any Etsy variation property" % role
+        )
+    return property_ids
+
+
 # ------------------- SKU decode -------------------
 
 
@@ -1620,11 +1650,12 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
             }
         )
 
-    prop_ids = [p["property_id"] for p in props if p.get("property_id") is not None]
+    prop_ids = [int(p["property_id"]) for p in props if p.get("property_id") is not None]
+    price_prop_ids = property_ids_for_pricing(props, payload.get("pricing_by"))
 
     put_payload = {
         "products": products_out,
-        "price_on_property": prop_ids,
+        "price_on_property": price_prop_ids,
         "quantity_on_property": [],
         "sku_on_property": prop_ids,
     }
@@ -1655,7 +1686,7 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
 
     safe_print("[INFO] PUT overwrite products: %s" % len(products_out))
     safe_print("[INFO] readiness_state_id: %s" % rs_id)
-    safe_print("[INFO] price_on_property: %s" % prop_ids)
+    safe_print("[INFO] price_on_property: %s" % price_prop_ids)
     safe_print("[INFO] sku_on_property: %s" % prop_ids)
 
     safe_print("----- PUT_PAYLOAD_JSON_BEGIN -----")
