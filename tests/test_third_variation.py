@@ -9,6 +9,7 @@ if importlib.util.find_spec("pymysql") is None:
 
 import run_inventory
 from engine import etsy_api
+from engine.core import etsy_compatible_price_property_ids as modular_compatible_price_ids
 from engine.core import property_ids_for_pricing as modular_property_ids_for_pricing
 
 
@@ -66,6 +67,39 @@ class ThirdVariationTests(unittest.TestCase):
                 "qty",
             ),
             [516],
+        )
+
+    def test_all_non_empty_on_property_fields_align_for_three_variations(self):
+        expected = [513, 514, 516]
+        self.assertEqual(
+            run_inventory.etsy_compatible_price_property_ids(
+                [516],
+                expected,
+            ),
+            expected,
+        )
+        self.assertEqual(
+            modular_compatible_price_ids(
+                [516],
+                expected,
+            ),
+            expected,
+        )
+
+    def test_two_variation_price_dependency_stays_specific(self):
+        self.assertEqual(
+            run_inventory.etsy_compatible_price_property_ids(
+                [514],
+                [513, 514],
+            ),
+            [514],
+        )
+        self.assertEqual(
+            modular_compatible_price_ids(
+                [514],
+                [513, 514],
+            ),
+            [514],
         )
 
     def test_fixed_pricing_does_not_vary_on_a_property(self):

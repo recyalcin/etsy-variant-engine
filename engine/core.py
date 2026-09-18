@@ -55,6 +55,16 @@ def property_ids_for_pricing(props: List[Dict[str, Any]], pricing_by: Any) -> Li
         )
     return property_ids
 
+
+def etsy_compatible_price_property_ids(
+    price_property_ids: List[int],
+    sku_property_ids: List[int],
+) -> List[int]:
+    """Honor Etsy's coupled *_on_property rule for three variations."""
+    if len(sku_property_ids) == 3 and price_property_ids:
+        return list(sku_property_ids)
+    return list(price_property_ids)
+
 # ------------------- Etsy scale/meta map -------------------
 
 
@@ -605,7 +615,10 @@ def build_and_push(profile, payload: Dict[str, Any], dry_run: bool) -> None:
         )
 
     prop_ids = [int(p["property_id"]) for p in props if p.get("property_id") is not None]
-    price_prop_ids = property_ids_for_pricing(props, payload.get("pricing_by"))
+    price_prop_ids = etsy_compatible_price_property_ids(
+        property_ids_for_pricing(props, payload.get("pricing_by")),
+        prop_ids,
+    )
 
     if dry_run:
         # UNIQUE FILTER for mapping_trace
