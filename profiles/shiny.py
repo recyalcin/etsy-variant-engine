@@ -27,7 +27,7 @@ class ShinyProfile:
         "color": 1,
         "qty": 2,
         "length": 2,
-        "size": 1,
+        "size": 2,
         "start": 2,
         "space": 1,
     }
@@ -40,7 +40,7 @@ class ShinyProfile:
         "i_color":  {"cols": ["code", "desc", "desc2"], "code_len": 1},
         "i_length": {"cols": ["code", "desc", "desc2"], "code_len": 2},
         "i_qty":    {"cols": ["code", "desc", "desc2"], "code_len": 2},
-        "i_size":   {"cols": ["code", "desc", "desc2"], "code_len": 1},
+        "i_size":   {"cols": ["code", "desc", "desc2"], "code_len": 2},
         "i_start":  {"cols": ["code", "desc", "desc2"], "code_len": 2},
         "i_space":  {"cols": ["code", "desc", "desc2"], "code_len": 1},
     }
