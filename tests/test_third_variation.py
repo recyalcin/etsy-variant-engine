@@ -9,8 +9,10 @@ if importlib.util.find_spec("pymysql") is None:
 
 import run_inventory
 from engine import etsy_api
-from engine.core import etsy_compatible_price_property_ids as modular_compatible_price_ids
+from engine.config import PROFILES as ENGINE_PROFILES
+from engine.core import normalize_on_property_fields as modular_normalize_on_property_fields
 from engine.core import property_ids_for_pricing as modular_property_ids_for_pricing
+from profiles.shiny import ShinyProfile
 
 
 THREE_VARIATION_PROPERTIES = [
@@ -18,6 +20,17 @@ THREE_VARIATION_PROPERTIES = [
     {"property_id": 514, "components": ["length"]},
     {"property_id": 516, "components": ["qty"]},
 ]
+
+
+def products_with_property_ids(*property_ids):
+    return [
+        {
+            "property_values": [
+                {"property_id": property_id}
+                for property_id in property_ids
+            ]
+        }
+    ]
 
 
 class ThirdVariationTests(unittest.TestCase):
@@ -69,37 +82,90 @@ class ThirdVariationTests(unittest.TestCase):
             [516],
         )
 
-    def test_all_non_empty_on_property_fields_align_for_three_variations(self):
-        expected = [513, 514, 516]
+    def test_two_variation_fields_align_when_sku_uses_all_properties(self):
+        expected = {
+            "price_on_property": [513, 514],
+            "quantity_on_property": [],
+            "sku_on_property": [513, 514],
+        }
+        products = products_with_property_ids(514, 513)
+
         self.assertEqual(
-            run_inventory.etsy_compatible_price_property_ids(
-                [516],
-                expected,
+            run_inventory.normalize_on_property_fields(
+                products,
+                price_on_property=[514],
+                quantity_on_property=[],
+                sku_on_property=[513, 514],
             ),
             expected,
         )
         self.assertEqual(
-            modular_compatible_price_ids(
-                [516],
-                expected,
+            modular_normalize_on_property_fields(
+                products,
+                price_on_property=[514],
+                quantity_on_property=[],
+                sku_on_property=[513, 514],
             ),
             expected,
         )
 
-    def test_two_variation_price_dependency_stays_specific(self):
+    def test_three_variation_fields_align_when_sku_uses_all_properties(self):
+        expected = {
+            "price_on_property": [513, 514, 516],
+            "quantity_on_property": [],
+            "sku_on_property": [513, 514, 516],
+        }
+        products = products_with_property_ids(516, 513, 514)
+
         self.assertEqual(
-            run_inventory.etsy_compatible_price_property_ids(
-                [514],
-                [513, 514],
+            run_inventory.normalize_on_property_fields(
+                products,
+                price_on_property=[516],
+                quantity_on_property=[],
+                sku_on_property=[513, 514, 516],
             ),
-            [514],
+            expected,
         )
         self.assertEqual(
-            modular_compatible_price_ids(
-                [514],
-                [513, 514],
+            modular_normalize_on_property_fields(
+                products,
+                price_on_property=[516],
+                quantity_on_property=[],
+                sku_on_property=[513, 514, 516],
             ),
-            [514],
+            expected,
+        )
+
+    def test_non_full_fields_remain_specific(self):
+        expected = {
+            "price_on_property": [516],
+            "quantity_on_property": [],
+            "sku_on_property": [513],
+        }
+        self.assertEqual(
+            run_inventory.normalize_on_property_fields(
+                products_with_property_ids(513, 514, 516),
+                price_on_property=[516],
+                quantity_on_property=[],
+                sku_on_property=[513],
+            ),
+            expected,
+        )
+
+    def test_single_variation_fields_remain_valid(self):
+        expected = {
+            "price_on_property": [513],
+            "quantity_on_property": [],
+            "sku_on_property": [513],
+        }
+        self.assertEqual(
+            run_inventory.normalize_on_property_fields(
+                products_with_property_ids(513),
+                price_on_property=[513],
+                quantity_on_property=[],
+                sku_on_property=[513],
+            ),
+            expected,
         )
 
     def test_fixed_pricing_does_not_vary_on_a_property(self):
@@ -110,6 +176,12 @@ class ThirdVariationTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_shiny_size_codes_are_two_characters_everywhere(self):
+        self.assertEqual(run_inventory.PROFILES["shiny"].size_len, 2)
+        self.assertEqual(ENGINE_PROFILES["shiny"].size_len, 2)
+        self.assertEqual(ShinyProfile.code_len["size"], 2)
+        self.assertEqual(ShinyProfile.tables["i_size"]["code_len"], 2)
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ class Profile:
 PROFILES: Dict[str, Profile] = {
     "shiny": Profile(
         name="shiny",
-        type_len=2, length_len=2, color_len=1, qty_len=2, size_len=1, start_len=2, space_len=1,
+        type_len=2, length_len=2, color_len=1, qty_len=2, size_len=2, start_len=2, space_len=1,
         sku_order=["type", "color", "qty", "length", "start", "space", "size"],
     ),
     "silveristic": Profile(

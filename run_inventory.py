@@ -93,7 +93,7 @@ PROFILES: Dict[str, Profile] = {
         length_len=2,
         color_len=1,
         qty_len=2,
-        size_len=1,
+        size_len=2,
         start_len=2,
         space_len=1,
         sku_order=["type", "color", "qty", "length", "start", "space", "size"],
@@ -1281,14 +1281,38 @@ def property_ids_for_pricing(props: List[Dict[str, Any]], pricing_by: Any) -> Li
     return property_ids
 
 
-def etsy_compatible_price_property_ids(
-    price_property_ids: List[int],
-    sku_property_ids: List[int],
-) -> List[int]:
-    """Honor Etsy's coupled *_on_property rule for three variations."""
-    if len(sku_property_ids) == 3 and price_property_ids:
-        return list(sku_property_ids)
-    return list(price_property_ids)
+def normalize_on_property_fields(
+    products: List[Dict[str, Any]],
+    price_on_property: Optional[List[int]] = None,
+    quantity_on_property: Optional[List[int]] = None,
+    sku_on_property: Optional[List[int]] = None,
+) -> Dict[str, List[int]]:
+    """Align non-empty Etsy *_on_property fields when one uses every variation."""
+    all_property_ids = sorted(
+        {
+            int(pv["property_id"])
+            for product_item in products
+            for pv in (product_item.get("property_values") or [])
+            if pv.get("property_id") is not None
+        }
+    )
+    fields = {
+        "price_on_property": list(price_on_property or []),
+        "quantity_on_property": list(quantity_on_property or []),
+        "sku_on_property": list(sku_on_property or []),
+    }
+
+    all_set = set(all_property_ids)
+    has_full_property_field = bool(all_set) and any(
+        field and set(field) == all_set
+        for field in fields.values()
+    )
+    if has_full_property_field:
+        for field_name, field in fields.items():
+            if field:
+                fields[field_name] = list(all_property_ids)
+
+    return fields
 
 
 # ------------------- SKU decode -------------------
@@ -1661,16 +1685,21 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
         )
 
     prop_ids = [int(p["property_id"]) for p in props if p.get("property_id") is not None]
-    price_prop_ids = etsy_compatible_price_property_ids(
-        property_ids_for_pricing(props, payload.get("pricing_by")),
-        prop_ids,
+    on_property_fields = normalize_on_property_fields(
+        products_out,
+        price_on_property=property_ids_for_pricing(props, payload.get("pricing_by")),
+        quantity_on_property=[],
+        sku_on_property=prop_ids,
     )
+    price_prop_ids = on_property_fields["price_on_property"]
+    quantity_prop_ids = on_property_fields["quantity_on_property"]
+    sku_prop_ids = on_property_fields["sku_on_property"]
 
     put_payload = {
         "products": products_out,
         "price_on_property": price_prop_ids,
-        "quantity_on_property": [],
-        "sku_on_property": prop_ids,
+        "quantity_on_property": quantity_prop_ids,
+        "sku_on_property": sku_prop_ids,
     }
 
     if dry_run:
@@ -1700,7 +1729,7 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
     safe_print("[INFO] PUT overwrite products: %s" % len(products_out))
     safe_print("[INFO] readiness_state_id: %s" % rs_id)
     safe_print("[INFO] price_on_property: %s" % price_prop_ids)
-    safe_print("[INFO] sku_on_property: %s" % prop_ids)
+    safe_print("[INFO] sku_on_property: %s" % sku_prop_ids)
 
     safe_print("----- PUT_PAYLOAD_JSON_BEGIN -----")
     safe_print(dump_payload_for_log(put_payload))
