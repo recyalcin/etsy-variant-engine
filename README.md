@@ -1,5 +1,30 @@
 ## Etsy Variant Engine
 
+### Optional AI variant analysis
+
+The web UI can use OpenAI to resolve ambiguous Etsy variation semantics while
+keeping the existing deterministic engine as the default. Resolution order is:
+deterministic rules, previously validated mappings, AI when needed, then manual
+override fallback. AI output is schema-constrained and validated against the
+actual Etsy property IDs and values before it can affect product generation.
+
+Configure it through the **AI Integration** section in the UI or with these
+environment variables:
+
+```ini
+AI_VARIANT_ENABLED=false
+AI_VARIANT_MODE=necessary
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=...
+```
+
+`AI_VARIANT_MODE` accepts `necessary` or `always`. The API key is read from the
+environment, or accepted transiently by the UI for one run; it is never written
+to the generated input JSON or logs. Successful high-confidence AI mappings are
+stored locally under `inputs/variant_mapping_rules.json` after a successful Etsy
+update. Dry-run performs analysis and preflight validation without saving a rule
+or updating Etsy.
+
 Rule-driven Etsy inventory automation engine with DB-backed SKU generation,
 
 automatic template analysis, scale-property handling, and workshop-safe SKU fallback.

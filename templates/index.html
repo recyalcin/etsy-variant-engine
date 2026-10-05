@@ -16,8 +16,8 @@
     .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
     .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
     label{color:var(--muted)}
-    input[type="number"]{
-      width:220px;background:#0d1420;border:1px solid var(--line);color:var(--text);
+    input[type="number"],input[type="text"],input[type="password"],select{
+      min-width:220px;background:#0d1420;border:1px solid var(--line);color:var(--text);
       padding:10px;border-radius:10px;outline:none
     }
     textarea{
@@ -43,6 +43,13 @@
     details{border:1px solid var(--line);border-radius:12px;padding:10px;background:#0d1420}
     summary{cursor:pointer;color:var(--muted);font-weight:650}
     .hint{color:var(--muted);font-size:12px;margin-top:8px}
+    .ai-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px}
+    .field{display:flex;flex-direction:column;gap:6px}
+    .choice{display:flex;align-items:center;gap:7px;color:var(--text)}
+    .status{font-size:12px;color:var(--muted)}
+    table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+    th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)}
+    th{color:var(--muted)}
     .split{display:grid;grid-template-columns:1fr;gap:12px}
     @media (min-width: 980px){
       .split{grid-template-columns:1.1fr .9fr}
@@ -50,6 +57,10 @@
   </style>
 </head>
 <body>
+
+  {% set current_ai_enabled = form.ai_enabled if form else ai_defaults.enabled %}
+  {% set current_ai_model = form.ai_model if form else ai_defaults.model %}
+  {% set current_ai_mode = form.ai_mode if form else ai_defaults.mode %}
 
   <h2>Etsy Varyant Otomasyon Paneli</h2>
   <p class="sub">Atölye metnini yapıştır → payload otomatik oluşur → dry-run ile kontrol et → sonra gerçek çalıştır.</p>
@@ -75,6 +86,49 @@
           İpucu: “Price: $82” → fixed, “Gold - $82” → by_color, “1 taki - $58” → by_qty (quantity listesinden sayı çekilir).
         </div>
       </div>
+
+      <details style="margin-top:12px" {% if current_ai_enabled %}open{% endif %}>
+        <summary>Opsiyonel AI varyant analizi</summary>
+        <div class="ai-grid">
+          <div class="field">
+            <label for="ai_provider">Sağlayıcı</label>
+            <select id="ai_provider" name="ai_provider">
+              <option value="openai">OpenAI</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ai_model">Model</label>
+            <input id="ai_model" name="ai_model" type="text" list="ai_models" value="{{ current_ai_model }}"/>
+            <datalist id="ai_models">
+              <option value="gpt-4o-mini"></option>
+              <option value="gpt-4o"></option>
+              <option value="gpt-5-mini"></option>
+            </datalist>
+          </div>
+          <div class="field">
+            <label for="ai_api_key">API anahtarı</label>
+            <input id="ai_api_key" name="ai_api_key" type="password" autocomplete="new-password" placeholder="{{ 'Sunucuda tanımlı' if ai_key_configured else 'sk-...' }}"/>
+            <span class="hint">Boş bırakırsanız sunucudaki OPENAI_API_KEY kullanılır. Anahtar kaydedilmez ve loglanmaz.</span>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <label class="choice">
+            <input type="checkbox" name="ai_enabled" value="true" {% if current_ai_enabled %}checked{% endif %}/>
+            AI analizini etkinleştir
+          </label>
+          <label class="choice">
+            <input type="radio" name="ai_mode" value="necessary" {% if current_ai_mode != 'always' %}checked{% endif %}/>
+            Yalnızca gerektiğinde
+          </label>
+          <label class="choice">
+            <input type="radio" name="ai_mode" value="always" {% if current_ai_mode == 'always' %}checked{% endif %}/>
+            Her çalıştırmada
+          </label>
+          <button id="test-ai" type="button">Bağlantıyı Test Et</button>
+          <span id="ai-test-status" class="status"></span>
+        </div>
+        <div class="hint">Akış: deterministik kurallar → kaydedilmiş eşlemeler → gerekirse AI → manuel override. %90 ve üzeri güven otomatik uygulanır; %70–90 arası yalnızca öneri olarak gösterilir.</div>
+      </details>
     </form>
   </div>
 
@@ -95,6 +149,63 @@
       <div class="card">
         <h3 style="margin:0 0 10px 0">Çıktı / Log</h3>
 
+        {% if result.ai_analysis and result.ai_analysis.enabled %}
+          {% set ai = result.ai_analysis %}
+          {% set shown_override = ai.generated_override or ai.proposed_override or {} %}
+          {% set ai_warning = ai.status in ['unavailable', 'low_confidence', 'confirmation_required'] %}
+          <details open>
+            <summary>AI analiz önizlemesi</summary>
+            <div style="margin-top:10px">
+              <div class="row">
+                <span class="pill {{ 'bad' if ai_warning else 'ok' }}">{{ ai.status }}</span>
+                {% if ai.confidence is not none %}<span>Güven: {{ '%.0f'|format(ai.confidence * 100) }}%</span>{% endif %}
+              </div>
+              {% if ai.reason %}<p class="hint">{{ ai.reason }}</p>{% endif %}
+              {% if ai.status == 'confirmation_required' %}
+                <p class="hint">Bu öneri otomatik uygulanmadı. Öneriyi kontrol edip atölye metnindeki manuel override alanına ekleyebilirsiniz.</p>
+              {% endif %}
+              {% if shown_override.component_overrides %}
+                <div class="hint">Tespit edilen property rolleri</div>
+                <table>
+                  <thead><tr><th>Property ID</th><th>Rol</th></tr></thead>
+                  <tbody>
+                    {% for property_id, components in shown_override.component_overrides.items() %}
+                      <tr><td>{{ property_id }}</td><td>{{ components | join(', ') }}</td></tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+              {% if shown_override.display_value_overrides_by_property %}
+                <div class="hint">Workshop → Etsy eşlemeleri</div>
+                <table>
+                  <thead><tr><th>Property</th><th>Rol</th><th>Workshop</th><th>Etsy</th></tr></thead>
+                  <tbody>
+                    {% for property_id, roles in shown_override.display_value_overrides_by_property.items() %}
+                      {% for role, mappings in roles.items() %}
+                        {% for source, target in mappings.items() %}
+                          <tr><td>{{ property_id }}</td><td>{{ role }}</td><td>{{ source }}</td><td>{{ target }}</td></tr>
+                        {% endfor %}
+                      {% endfor %}
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+              {% if ai.pricing_normalizations %}
+                <div class="hint">Fiyat etiketi normalizasyonları</div>
+                <table>
+                  <thead><tr><th>Girdi etiketi</th><th>Normalize Etsy etiketi</th></tr></thead>
+                  <tbody>
+                    {% for item in ai.pricing_normalizations %}
+                      <tr><td>{{ item.source }}</td><td>{{ item.target }}</td></tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+              <details style="margin-top:10px"><summary>Gelişmiş JSON</summary><pre>{{ shown_override | tojson(indent=2) }}</pre></details>
+            </div>
+          </details>
+        {% endif %}
+
         <!-- expandable logs -->
         <details {% if not result.ok %}open{% endif %}>
           <summary>Logları göster / gizle</summary>
@@ -109,6 +220,28 @@
       </div>
     </div>
   {% endif %}
+
+  <script>
+    const testButton = document.getElementById('test-ai');
+    if (testButton) {
+      testButton.addEventListener('click', async () => {
+        const status = document.getElementById('ai-test-status');
+        const form = new FormData();
+        form.append('ai_model', document.getElementById('ai_model').value);
+        form.append('ai_api_key', document.getElementById('ai_api_key').value);
+        status.textContent = 'Test ediliyor…';
+        try {
+          const response = await fetch('/api/ai/test', {method: 'POST', body: form});
+          const data = await response.json();
+          status.textContent = data.ok ? `Bağlantı başarılı (${data.model})` : `Hata: ${data.error}`;
+          status.style.color = data.ok ? 'var(--ok)' : 'var(--bad)';
+        } catch (error) {
+          status.textContent = 'Bağlantı testi tamamlanamadı.';
+          status.style.color = 'var(--bad)';
+        }
+      });
+    }
+  </script>
 
 </body>
 </html>

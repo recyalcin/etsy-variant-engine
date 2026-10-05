@@ -34,6 +34,73 @@ def products_with_property_ids(*property_ids):
 
 
 class ThirdVariationTests(unittest.TestCase):
+    def test_template_qty_units_do_not_leak_from_length_property(self):
+        inventory = {
+            "products": [
+                {
+                    "property_values": [
+                        {"property_id": 513, "property_name": "Chain Length", "values": ["14 inches"]},
+                        {"property_id": 516, "property_name": "Number of Fishes", "values": ["3 Fishes"]},
+                    ]
+                },
+                {
+                    "property_values": [
+                        {"property_id": 513, "property_name": "Chain Length", "values": ["16 inches"]},
+                        {"property_id": 516, "property_name": "Number of Fishes", "values": ["5 Fishes"]},
+                    ]
+                },
+            ]
+        }
+
+        result = run_inventory.analyze_template(inventory, set(), set(), {})
+
+        self.assertEqual(result["qty_unit_plural"], "Fishes")
+        qty_prop = next(item for item in result["properties"] if item["property_id"] == 516)
+        self.assertEqual(qty_prop["components"], ["qty"])
+        self.assertEqual(qty_prop["all_values"], ["3 Fishes", "5 Fishes"])
+
+    def test_delimiter_override_is_applied_during_analysis(self):
+        inventory = {
+            "products": [{
+                "property_values": [{
+                    "property_id": 513,
+                    "property_name": "Color / Length",
+                    "values": ["Gold / 14 inches"],
+                }]
+            }]
+        }
+        payload = {"delim_overrides": {"513": " - "}}
+
+        result = run_inventory.analyze_template(inventory, {"gold"}, set(), payload)
+
+        self.assertEqual(result["properties"][0]["delim"], " - ")
+
+    def test_global_display_override_is_resolved(self):
+        payload = {"display_value_overrides": {"qty": {"1 tas": "1 Birthstone"}}}
+        self.assertEqual(
+            run_inventory.resolve_display_override(
+                payload, role="qty", property_id=514, raw_value="1 TAS"
+            ),
+            "1 Birthstone",
+        )
+
+    def test_preflight_rejects_value_not_present_in_etsy_property(self):
+        profile = run_inventory.PROFILES["shiny"]
+        sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
+        products = [{
+            "sku": "0" * sku_length,
+            "property_values": [{"property_id": 514, "values": ["Invented"]}],
+            "offerings": [{"price": 10, "quantity": 1}],
+        }]
+        props = [{
+            "property_id": 514,
+            "sample_values": ["No Engraving", "Backside Engraving"],
+            "all_values": ["No Engraving", "Backside Engraving"],
+        }]
+
+        with self.assertRaisesRegex(ValueError, "not present in Etsy property"):
+            run_inventory.preflight_validate_products(products, props, 1, profile)
+
     def test_active_runner_enables_three_variations_on_put(self):
         response = Mock(ok=True)
         response.json.return_value = {"listing_id": 123}

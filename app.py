@@ -20,6 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 from dotenv import load_dotenv
 
+from engine.ai_variant import AIUnavailableError, DEFAULT_MODEL, test_openai_connection
+
 load_dotenv()
 
 APP_DIR = Path(__file__).resolve().parent
@@ -49,12 +51,62 @@ def env_write_enabled() -> str:
     return (os.getenv("WRITE_ENABLED") or "true").strip().lower()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def ai_defaults() -> Dict[str, Any]:
+    mode = (os.getenv("AI_VARIANT_MODE") or "necessary").strip().lower()
+    if mode not in ("necessary", "always"):
+        mode = "necessary"
+    return {
+        "enabled": _env_bool("AI_VARIANT_ENABLED", False),
+        "provider": "openai",
+        "model": (os.getenv("OPENAI_MODEL") or DEFAULT_MODEL).strip(),
+        "mode": mode,
+    }
+
+
+def _parse_ai_analysis(output: str) -> Optional[Dict[str, Any]]:
+    match = re.search(
+        r"----- AI_ANALYSIS_JSON_BEGIN -----\s*(\{.*?\})\s*----- AI_ANALYSIS_JSON_END -----",
+        output or "",
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    try:
+        value = json.loads(match.group(1))
+        return value if isinstance(value, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _attach_ai_config(
+    payload: Dict[str, Any],
+    enabled: bool,
+    provider: str,
+    model: str,
+    mode: str,
+) -> None:
+    selected_mode = mode if mode in ("necessary", "always") else "necessary"
+    payload["ai_variant_analysis"] = {
+        "enabled": bool(enabled),
+        "provider": "openai" if provider != "openai" else provider,
+        "model": (model or DEFAULT_MODEL).strip(),
+        "mode": selected_mode,
+    }
+
+
 def ensure_runner_exists():
     if not RUNNER.exists():
         raise RuntimeError("run_inventory.py not found at: %s" % RUNNER)
 
 
-def run_cmd(cmd, timeout=300):
+def run_cmd(cmd, timeout=300, env_overrides=None):
     """
     Run subprocess, capture combined output.
     returns (exit_code:int, output_text:str)
@@ -63,6 +115,10 @@ def run_cmd(cmd, timeout=300):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        if isinstance(env_overrides, dict):
+            for key, value in env_overrides.items():
+                if value is not None:
+                    env[str(key)] = str(value)
 
         print("[APP][run_cmd] cwd =", str(APP_DIR), flush=True)
         print("[APP][run_cmd] cmd =", cmd, flush=True)
@@ -474,6 +530,8 @@ async def index(request: Request):
             "profile": env_profile(),
             "mysql_db": env_db(),
             "write_enabled": env_write_enabled(),
+            "ai_defaults": ai_defaults(),
+            "ai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
             "form": None,
             "result": None,
         },
@@ -499,9 +557,24 @@ async def run_page(
     listing_id: int = Form(...),
     workshop_text: str = Form(...),
     dry_run: Optional[str] = Form(None),
+    ai_enabled: Optional[str] = Form(None),
+    ai_provider: str = Form("openai"),
+    ai_model: str = Form(DEFAULT_MODEL),
+    ai_mode: str = Form("necessary"),
+    ai_api_key: str = Form(""),
 ):
     ensure_runner_exists()
     is_dry = bool(dry_run)
+    use_ai = bool(ai_enabled)
+    form_state = {
+        "listing_id": listing_id,
+        "workshop_text": workshop_text,
+        "dry_run": is_dry,
+        "ai_enabled": use_ai,
+        "ai_provider": ai_provider,
+        "ai_model": ai_model,
+        "ai_mode": ai_mode,
+    }
 
     wt = (workshop_text or "").strip()
     if wt and ("/edit/" not in wt) and ("listing id" not in wt.lower()) and ("id:" not in wt.lower()):
@@ -517,11 +590,15 @@ async def run_page(
                 "profile": env_profile(),
                 "mysql_db": env_db(),
                 "write_enabled": env_write_enabled(),
-                "form": {"listing_id": listing_id, "workshop_text": workshop_text, "dry_run": is_dry},
+                "ai_defaults": ai_defaults(),
+                "ai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+                "form": form_state,
                 "result": {"ok": False, "error": str(e), "payload": {}, "logs": ""},
             },
             status_code=400,
         )
+
+    _attach_ai_config(payload, use_ai, ai_provider, ai_model, ai_mode)
 
     ts = int(time.time())
     input_path = INPUTS_DIR / ("input_%s_%s.json" % (payload["listing_id"], ts))
@@ -538,7 +615,8 @@ async def run_page(
     print("[APP] CWD =", str(APP_DIR), flush=True)
     print("[APP] CMD =", cmd, flush=True)
 
-    code, out = run_cmd(cmd, timeout=600)
+    secret_env = {"OPENAI_API_KEY": ai_api_key.strip()} if ai_api_key.strip() else None
+    code, out = run_cmd(cmd, timeout=600, env_overrides=secret_env)
 
     return templates.TemplateResponse(
         "index.html",
@@ -547,25 +625,37 @@ async def run_page(
             "profile": env_profile(),
             "mysql_db": env_db(),
             "write_enabled": env_write_enabled(),
-            "form": {"listing_id": listing_id, "workshop_text": workshop_text, "dry_run": is_dry},
+            "ai_defaults": ai_defaults(),
+            "ai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+            "form": form_state,
             "result": {
                 "ok": code == 0,
                 "error": "" if code == 0 else "Runner exit_code=%s" % code,
                 "payload": payload,
                 "logs": out,
+                "ai_analysis": _parse_ai_analysis(out),
             },
         },
     )
 
 
 @app.post("/api/preview")
-async def api_preview(workshop_text: str = Form(...), debug: Optional[bool] = Form(False)):
+async def api_preview(
+    workshop_text: str = Form(...),
+    debug: Optional[bool] = Form(False),
+    ai_enabled: Optional[bool] = Form(False),
+    ai_provider: str = Form("openai"),
+    ai_model: str = Form(DEFAULT_MODEL),
+    ai_mode: str = Form("necessary"),
+    ai_api_key: str = Form(""),
+):
     ensure_runner_exists()
     try:
         payload = parse_workshop_text_to_payload(workshop_text)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    _attach_ai_config(payload, bool(ai_enabled), ai_provider, ai_model, ai_mode)
     ts = int(time.time())
     input_path = INPUTS_DIR / ("input_%s_%s.json" % (payload["listing_id"], ts))
     input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -575,7 +665,8 @@ async def api_preview(workshop_text: str = Form(...), debug: Optional[bool] = Fo
         cmd.append("--debug")
 
     print("[APP][preview] CMD =", cmd, flush=True)
-    code, out = run_cmd(cmd, timeout=300)
+    secret_env = {"OPENAI_API_KEY": ai_api_key.strip()} if ai_api_key.strip() else None
+    code, out = run_cmd(cmd, timeout=300, env_overrides=secret_env)
 
     return JSONResponse(
         {
@@ -584,19 +675,29 @@ async def api_preview(workshop_text: str = Form(...), debug: Optional[bool] = Fo
             "input_path": str(input_path),
             "payload": payload,
             "stdout": out,
+            "ai_analysis": _parse_ai_analysis(out),
             "python_executable": sys.executable,
         }
     )
 
 
 @app.post("/api/run")
-async def api_run(workshop_text: str = Form(...), debug: Optional[bool] = Form(False)):
+async def api_run(
+    workshop_text: str = Form(...),
+    debug: Optional[bool] = Form(False),
+    ai_enabled: Optional[bool] = Form(False),
+    ai_provider: str = Form("openai"),
+    ai_model: str = Form(DEFAULT_MODEL),
+    ai_mode: str = Form("necessary"),
+    ai_api_key: str = Form(""),
+):
     ensure_runner_exists()
     try:
         payload = parse_workshop_text_to_payload(workshop_text)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    _attach_ai_config(payload, bool(ai_enabled), ai_provider, ai_model, ai_mode)
     ts = int(time.time())
     input_path = INPUTS_DIR / ("input_%s_%s.json" % (payload["listing_id"], ts))
     input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -606,7 +707,8 @@ async def api_run(workshop_text: str = Form(...), debug: Optional[bool] = Form(F
         cmd.append("--debug")
 
     print("[APP][run] CMD =", cmd, flush=True)
-    code, out = run_cmd(cmd, timeout=600)
+    secret_env = {"OPENAI_API_KEY": ai_api_key.strip()} if ai_api_key.strip() else None
+    code, out = run_cmd(cmd, timeout=600, env_overrides=secret_env)
 
     return JSONResponse(
         {
@@ -615,6 +717,20 @@ async def api_run(workshop_text: str = Form(...), debug: Optional[bool] = Form(F
             "input_path": str(input_path),
             "payload": payload,
             "stdout": out,
+            "ai_analysis": _parse_ai_analysis(out),
             "python_executable": sys.executable,
         }
     )
+
+
+@app.post("/api/ai/test")
+async def api_ai_test(
+    ai_model: str = Form(DEFAULT_MODEL),
+    ai_api_key: str = Form(""),
+):
+    api_key = ai_api_key.strip() or os.getenv("OPENAI_API_KEY", "").strip()
+    try:
+        result = test_openai_connection(api_key, ai_model or DEFAULT_MODEL)
+        return JSONResponse(result)
+    except AIUnavailableError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

@@ -18,6 +18,8 @@ import json
 import time
 import html
 import argparse
+import copy
+import math
 import requests
 import pymysql
 
@@ -25,6 +27,14 @@ from itertools import product
 from collections import defaultdict, Counter
 from dotenv import load_dotenv
 from typing import List, Dict, Optional, Any, Set, Tuple
+
+from engine.ai_variant import (
+    DEFAULT_AUTO_APPLY_CONFIDENCE,
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_MODEL,
+    resolve_variant_analysis,
+    save_successful_analysis,
+)
 
 load_dotenv()
 
@@ -662,9 +672,16 @@ def analyze_template(inv: Dict[str, Any], color_set_lower: Set[str], length_set_
         comps = normalize_components(comps)
         comps = apply_component_override(pid, comps, payload)
 
-        for s in samples_dec:
-            if NUM_PREFIX.match(strip_option_word(s).strip()):
-                qty_samples_all.append(strip_option_word(s))
+        delim_overrides = payload.get("delim_overrides") or {}
+        if isinstance(delim_overrides, dict):
+            configured_delim = delim_overrides.get(str(pid), delim_overrides.get(pid))
+            if configured_delim is not None and str(configured_delim):
+                delim = str(configured_delim)
+
+        if "qty" in comps:
+            for s in samples_dec:
+                if NUM_PREFIX.match(strip_option_word(s).strip()):
+                    qty_samples_all.append(strip_option_word(s))
 
         props.append(
             {
@@ -674,6 +691,7 @@ def analyze_template(inv: Dict[str, Any], color_set_lower: Set[str], length_set_
                 "delim": delim,
                 "components": comps,
                 "sample_values": samples_dec[:60],
+                "all_values": samples_dec,
             }
         )
 
@@ -730,7 +748,7 @@ def resolve_display_override(
 ) -> Optional[str]:
     root = payload.get("display_value_overrides_by_property") or {}
     if not isinstance(root, dict):
-        return None
+        root = {}
 
     raw = str(raw_value).strip()
     pid_key = str(property_id) if property_id is not None else None
@@ -759,6 +777,16 @@ def resolve_display_override(
 
     if role and isinstance(root.get(role), dict):
         mp = parse_simple_config_string_map(root.get(role))
+        if raw in mp and mp[raw]:
+            return mp[raw]
+        raw_norm = raw.strip().lower()
+        for k, v in mp.items():
+            if str(k).strip().lower() == raw_norm and v:
+                return str(v).strip()
+
+    global_root = payload.get("display_value_overrides") or {}
+    if role and isinstance(global_root, dict) and isinstance(global_root.get(role), dict):
+        mp = parse_simple_config_string_map(global_root.get(role))
         if raw in mp and mp[raw]:
             return mp[raw]
         raw_norm = raw.strip().lower()
@@ -1190,6 +1218,18 @@ def calc_price(
                     if matched:
                         return float(raw_price)
 
+            global_root = payload.get("display_value_overrides") or {}
+            global_qty = global_root.get("qty") if isinstance(global_root, dict) else None
+            if isinstance(global_qty, dict):
+                for raw_key, raw_price in pricing.items():
+                    raw_key_norm = str(raw_key).strip().lower()
+                    for mapped_key, mapped_value in global_qty.items():
+                        if (
+                            str(mapped_key).strip().lower() == raw_key_norm
+                            and str(mapped_value).strip().lower() == qty_label_norm
+                        ):
+                            return float(raw_price)
+
         # 4) fallback numeric qty match
         if qty_n is not None:
             qty_key = str(qty_n)
@@ -1315,6 +1355,95 @@ def normalize_on_property_fields(
     return fields
 
 
+def preflight_validate_products(
+    products: List[Dict[str, Any]],
+    props: List[Dict[str, Any]],
+    expected_count: int,
+    profile: Profile,
+) -> Dict[str, Any]:
+    """Reject structurally unsafe inventory payloads before the Etsy PUT."""
+    if not products:
+        raise ValueError("Preflight failed: generated product list is empty")
+    if len(products) != int(expected_count):
+        raise ValueError(
+            "Preflight failed: expected %s products but generated %s"
+            % (expected_count, len(products))
+        )
+
+    expected_property_ids = {
+        int(prop["property_id"])
+        for prop in props
+        if prop.get("property_id") is not None
+    }
+    allowed_values_by_property = {
+        int(prop["property_id"]): {
+            norm_tr(html.unescape(str(value)).strip())
+            for value in (prop.get("all_values") or prop.get("sample_values") or [])
+            if str(value).strip()
+        }
+        for prop in props
+        if prop.get("property_id") is not None
+    }
+    expected_sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
+    seen_skus = set()
+
+    for index, product_item in enumerate(products):
+        sku = str(product_item.get("sku") or "")
+        if not sku or len(sku) != expected_sku_length:
+            raise ValueError(
+                "Preflight failed: product %s has invalid SKU length %s (expected %s)"
+                % (index, len(sku), expected_sku_length)
+            )
+        if sku in seen_skus:
+            raise ValueError("Preflight failed: duplicate SKU %r" % sku)
+        seen_skus.add(sku)
+
+        property_values = product_item.get("property_values") or []
+        actual_property_ids = {
+            int(item["property_id"])
+            for item in property_values
+            if item.get("property_id") is not None
+        }
+        if actual_property_ids != expected_property_ids or len(property_values) != len(expected_property_ids):
+            raise ValueError(
+                "Preflight failed: product %s property IDs %s do not match template %s"
+                % (index, sorted(actual_property_ids), sorted(expected_property_ids))
+            )
+        for property_value in property_values:
+            values = property_value.get("values") or []
+            if len(values) != 1 or not str(values[0]).strip():
+                raise ValueError("Preflight failed: product %s has an empty variation value" % index)
+            property_id = int(property_value["property_id"])
+            allowed_values = allowed_values_by_property.get(property_id) or set()
+            generated_value = norm_tr(html.unescape(str(values[0])).strip())
+            if allowed_values and generated_value not in allowed_values:
+                raise ValueError(
+                    "Preflight failed: product %s value %r is not present in Etsy property %s"
+                    % (index, values[0], property_id)
+                )
+
+        offerings = product_item.get("offerings") or []
+        if len(offerings) != 1:
+            raise ValueError("Preflight failed: product %s must have exactly one offering" % index)
+        offering = offerings[0]
+        try:
+            price = float(offering.get("price"))
+            quantity = int(offering.get("quantity"))
+        except (TypeError, ValueError):
+            raise ValueError("Preflight failed: product %s has invalid price or quantity" % index)
+        if not math.isfinite(price) or price < 0 or quantity < 0:
+            raise ValueError("Preflight failed: product %s has an invalid price or quantity" % index)
+        if offering.get("readiness_state_id") is None:
+            raise ValueError("Preflight failed: product %s has no readiness_state_id" % index)
+
+    return {
+        "ok": True,
+        "product_count": len(products),
+        "property_ids": sorted(expected_property_ids),
+        "sku_length": expected_sku_length,
+    }
+
+
 # ------------------- SKU decode -------------------
 
 
@@ -1341,6 +1470,17 @@ def decode_sku(profile: Profile, sku: str) -> Dict[str, str]:
 
 def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> None:
     DB_ACTIONS.clear()
+    original_payload = copy.deepcopy(payload)
+    ai_source_payload = copy.deepcopy(payload)
+    ai_source_props: List[Dict[str, Any]] = []
+    ai_state: Dict[str, Any] = {
+        "enabled": False,
+        "status": "disabled",
+        "applied": False,
+        "requested": False,
+        "generated_override": {},
+        "pricing_normalizations": [],
+    }
 
     listing_id = int(payload["listing_id"])
     safe_print("[INFO] profile: %s | db: %s" % (profile.name, os.environ.get("MYSQL_DB")))
@@ -1377,6 +1517,95 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
         (p["property_id"], p["property_name"], p["components"], p["delim"], p["sample_values"][:3])
         for p in props
     ],))
+
+    ai_source_props = copy.deepcopy(props)
+    ai_config = payload.get("ai_variant_analysis") or {}
+    if not isinstance(ai_config, dict):
+        ai_config = {}
+    enabled_raw = ai_config.get("enabled") if "enabled" in ai_config else os.getenv("AI_VARIANT_ENABLED", "false")
+    ai_enabled = str(enabled_raw).strip().lower() in ("1", "true", "yes", "on")
+    if ai_enabled:
+        provider = str(ai_config.get("provider") or "openai").strip().lower()
+        model = str(ai_config.get("model") or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL).strip()
+        mode = str(ai_config.get("mode") or os.getenv("AI_VARIANT_MODE") or "necessary").strip().lower()
+        if mode not in ("necessary", "always"):
+            mode = "necessary"
+        if provider != "openai":
+            ai_state.update({
+                "enabled": True,
+                "provider": provider,
+                "model": model,
+                "mode": mode,
+                "status": "unavailable",
+                "reason": "Unsupported AI provider: %s" % provider,
+            })
+        else:
+            try:
+                payload, ai_state = resolve_variant_analysis(
+                    profile.name,
+                    payload,
+                    props,
+                    api_key=os.getenv("OPENAI_API_KEY", ""),
+                    model=model,
+                    mode=mode,
+                    auto_apply_confidence=float(ai_config.get("auto_apply_confidence", DEFAULT_AUTO_APPLY_CONFIDENCE)),
+                    min_confidence=float(ai_config.get("min_confidence", DEFAULT_MIN_CONFIDENCE)),
+                    timeout_seconds=int(ai_config.get("timeout_seconds", 45)),
+                )
+            except Exception as exc:
+                ai_state = {
+                    "enabled": True,
+                    "provider": provider,
+                    "model": model,
+                    "mode": mode,
+                    "status": "unavailable",
+                    "requested": False,
+                    "applied": False,
+                    "confidence": None,
+                    "reason": "AI analysis could not be used (%s); existing engine workflow continues." % exc.__class__.__name__,
+                    "generated_override": {},
+                    "pricing_normalizations": [],
+                }
+
+        safe_print("[AI] status=%s applied=%s requested=%s" % (
+            ai_state.get("status"), ai_state.get("applied"), ai_state.get("requested")
+        ))
+        if ai_state.get("requested"):
+            safe_print("[AI] OpenAI structured variant analysis requested")
+        if ai_state.get("confidence") is not None:
+            safe_print("[AI] confidence=%.2f" % float(ai_state["confidence"]))
+        if ai_state.get("reason"):
+            safe_print("[AI] %s" % ai_state.get("reason"))
+        generated_for_log = ai_state.get("generated_override") or ai_state.get("proposed_override") or {}
+        for property_id, components in (generated_for_log.get("component_overrides") or {}).items():
+            safe_print("[AI] component override: %s -> %s" % (property_id, components))
+        for property_id, roles in (generated_for_log.get("display_value_overrides_by_property") or {}).items():
+            if not isinstance(roles, dict):
+                continue
+            for role, mappings in roles.items():
+                if not isinstance(mappings, dict):
+                    continue
+                for source, target in mappings.items():
+                    safe_print("[AI] mapping property=%s role=%s: %r -> %r" % (
+                        property_id, role, source, target
+                    ))
+        for normalization in ai_state.get("pricing_normalizations") or []:
+            safe_print("[AI] pricing normalized: %r -> %r" % (
+                normalization.get("source"), normalization.get("target")
+            ))
+
+        if ai_state.get("applied"):
+            tpl = analyze_template(inv, color_set_lower, length_set_lower, payload)
+            props = tpl["properties"]
+            safe_print("[AI] Template re-analyzed after validated overrides")
+
+    public_ai_state = {
+        key: value for key, value in ai_state.items()
+        if not str(key).startswith("_")
+    }
+    safe_print("----- AI_ANALYSIS_JSON_BEGIN -----")
+    safe_print(json.dumps(public_ai_state, ensure_ascii=False, indent=2))
+    safe_print("----- AI_ANALYSIS_JSON_END -----")
 
     qty_prop = next((p for p in props if "qty" in (p.get("components") or [])), None)
     size_prop = next((p for p in props if "size" in (p.get("components") or [])), None)
@@ -1684,6 +1913,12 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
             }
         )
 
+    expected_product_count = len(colors_iter) * len(lengths_iter) * len(qty_iter) * len(size_iter)
+    preflight = preflight_validate_products(products_out, props, expected_product_count, profile)
+    safe_print("[PREFLIGHT] OK products=%s properties=%s sku_length=%s" % (
+        preflight["product_count"], preflight["property_ids"], preflight["sku_length"]
+    ))
+
     prop_ids = [int(p["property_id"]) for p in props if p.get("property_id") is not None]
     on_property_fields = normalize_on_property_fields(
         products_out,
@@ -1717,6 +1952,12 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
                 "sku_decode_first8": sku_decode_first8,
                 "db_plan_summary": dict(summary),
                 "db_plan_by_table": plan,
+                "original_payload": original_payload,
+                "ai_analysis": public_ai_state,
+                "generated_override": public_ai_state.get("generated_override") or public_ai_state.get("proposed_override") or {},
+                "normalized_payload": payload,
+                "preflight": preflight,
+                "final_put_payload": put_payload,
                 "applied_display_value_overrides": display_overrides,
                 "applied_display_value_overrides_by_property": display_overrides_by_prop,
             },
@@ -1736,6 +1977,17 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
     safe_print("----- PUT_PAYLOAD_JSON_END -----")
 
     resp = put_inventory_overwrite(listing_id, put_payload)
+    if ai_state.get("_save_candidate"):
+        try:
+            save_successful_analysis(
+                profile.name,
+                ai_source_payload,
+                ai_source_props,
+                ai_state["_save_candidate"],
+            )
+            safe_print("[AI] Validated mapping saved after successful Etsy update")
+        except Exception as exc:
+            safe_print("[AI][WARN] Mapping could not be saved: %s" % exc.__class__.__name__)
     safe_print("OK listing_id: %s products: %s" % (resp.get("listing_id"), len(products_out)))
 
 
