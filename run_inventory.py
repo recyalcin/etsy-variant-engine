@@ -1033,7 +1033,10 @@ def resolve_length_code(profile: Profile, length_raw: str, i_length_rows: List[D
 def resolve_size_code(profile: Profile, size_raw: str, i_size_rows: List[Dict[str, Any]]) -> str:
     raw = str(size_raw or "").strip()
     if not raw or raw == "-":
-        return upsert_by_desc_schema("i_size", "-", profile.size_len)
+        # A missing/fixed size is a SKU placeholder, not a real size code.
+        # Legacy Shiny databases may still contain `-` with the old one-char
+        # code `0`, while the current profile correctly requires two chars.
+        return "0" * profile.size_len
 
     target = norm_tr(raw)
 

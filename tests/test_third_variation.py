@@ -101,6 +101,18 @@ class ThirdVariationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not present in Etsy property"):
             run_inventory.preflight_validate_products(products, props, 1, profile)
 
+    def test_empty_shiny_size_uses_two_character_sku_placeholder(self):
+        profile = run_inventory.PROFILES["shiny"]
+
+        result = run_inventory.resolve_size_code(
+            profile,
+            "-",
+            [{"code": "0", "desc": "-"}],
+        )
+
+        self.assertEqual(result, "00")
+        self.assertEqual(len(result), profile.size_len)
+
     def test_active_runner_enables_three_variations_on_put(self):
         response = Mock(ok=True)
         response.json.return_value = {"listing_id": 123}
