@@ -1395,6 +1395,13 @@ def preflight_validate_products(
         for prop in props
         if prop.get("property_id") is not None
     }
+    strict_value_property_ids = {
+        int(prop["property_id"])
+        for prop in props
+        if prop.get("property_id") is not None
+        and len(prop.get("components") or []) <= 1
+        and "length" not in (prop.get("components") or [])
+    }
     expected_sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
     seen_skus = set()
 
@@ -1427,7 +1434,11 @@ def preflight_validate_products(
             property_id = int(property_value["property_id"])
             allowed_values = allowed_values_by_property.get(property_id) or set()
             generated_value = norm_tr(html.unescape(str(values[0])).strip())
-            if allowed_values and generated_value not in allowed_values:
+            if (
+                property_id in strict_value_property_ids
+                and allowed_values
+                and generated_value not in allowed_values
+            ):
                 raise ValueError(
                     "Preflight failed: product %s value %r is not present in Etsy property %s"
                     % (index, values[0], property_id)

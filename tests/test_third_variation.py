@@ -94,12 +94,51 @@ class ThirdVariationTests(unittest.TestCase):
         }]
         props = [{
             "property_id": 514,
+            "components": ["qty"],
             "sample_values": ["No Engraving", "Backside Engraving"],
             "all_values": ["No Engraving", "Backside Engraving"],
         }]
 
         with self.assertRaisesRegex(ValueError, "not present in Etsy property"):
             run_inventory.preflight_validate_products(products, props, 1, profile)
+
+    def test_preflight_allows_new_value_for_length_property(self):
+        profile = run_inventory.PROFILES["shiny"]
+        sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
+        products = [{
+            "sku": "0" * sku_length,
+            "property_values": [{"property_id": 514, "values": ["14 inches"]}],
+            "offerings": [{"price": 10, "quantity": 1, "readiness_state_id": 1}],
+        }]
+        props = [{
+            "property_id": 514,
+            "components": ["length"],
+            "sample_values": ["16 inches", "18 inches"],
+            "all_values": ["16 inches", "18 inches"],
+        }]
+
+        result = run_inventory.preflight_validate_products(products, props, 1, profile)
+
+        self.assertTrue(result["ok"])
+
+    def test_preflight_allows_new_combined_property_value(self):
+        profile = run_inventory.PROFILES["shiny"]
+        sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
+        products = [{
+            "sku": "0" * sku_length,
+            "property_values": [{"property_id": 513, "values": ["Gold / 14 inches"]}],
+            "offerings": [{"price": 10, "quantity": 1, "readiness_state_id": 1}],
+        }]
+        props = [{
+            "property_id": 513,
+            "components": ["color", "length"],
+            "sample_values": ["Gold / 16 inches"],
+            "all_values": ["Gold / 16 inches"],
+        }]
+
+        result = run_inventory.preflight_validate_products(products, props, 1, profile)
+
+        self.assertTrue(result["ok"])
 
     def test_empty_shiny_size_uses_two_character_sku_placeholder(self):
         profile = run_inventory.PROFILES["shiny"]
