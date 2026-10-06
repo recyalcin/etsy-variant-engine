@@ -103,6 +103,80 @@ def zodiac_analysis(property_id=514):
 
 
 class AIVariantTests(unittest.TestCase):
+    def test_display_mapping_infers_missing_component_override_for_unknown_property(self):
+        payload = {
+            "quantities": ["arka boş", "arka kazımalı"],
+            "pricing_by": "qty",
+            "pricing": {"Arka boş": 45, "Arka kazımalı": 55},
+        }
+        props = [{
+            "property_id": 516,
+            "property_name": "Pendant Type",
+            "components": ["unknown"],
+            "sample_values": ["Backside Engraving", "No Engraving"],
+            "all_values": ["Backside Engraving", "No Engraving"],
+        }]
+        analysis = {
+            "override_required": True,
+            "confidence": 0.98,
+            "reason": "Values form an engraving choice.",
+            "override": {
+                "component_overrides": [],
+                "delim_overrides": [],
+                "qty_numbers": [
+                    {"source": "arka boş", "number": 1},
+                    {"source": "arka kazımalı", "number": 2},
+                ],
+                "display_value_overrides": [{
+                    "property_id": 516,
+                    "component": "qty",
+                    "mappings": [
+                        {"source": "arka boş", "target": "No Engraving"},
+                        {"source": "arka kazımalı", "target": "Backside Engraving"},
+                    ],
+                }],
+            },
+            "pricing_label_map": [
+                {"source": "Arka boş", "target": "No Engraving"},
+                {"source": "Arka kazımalı", "target": "Backside Engraving"},
+            ],
+        }
+
+        validated = validate_ai_analysis(analysis, payload, props)
+
+        self.assertEqual(validated["override"]["component_overrides"], [
+            {"property_id": 516, "components": ["qty"]},
+        ])
+
+    def test_display_mapping_cannot_replace_a_resolved_component_implicitly(self):
+        payload = {"quantities": ["arka boş", "arka kazımalı"]}
+        props = [{
+            "property_id": 516,
+            "property_name": "Pendant Type",
+            "components": ["size"],
+            "sample_values": ["Backside Engraving", "No Engraving"],
+            "all_values": ["Backside Engraving", "No Engraving"],
+        }]
+        analysis = {
+            "override_required": True,
+            "confidence": 0.98,
+            "reason": "Conflicting proposal.",
+            "override": {
+                "component_overrides": [],
+                "delim_overrides": [],
+                "qty_numbers": [],
+                "display_value_overrides": [{
+                    "property_id": 516,
+                    "component": "qty",
+                    "mappings": [],
+                }],
+            },
+            "pricing_label_map": [],
+        }
+
+        with self.assertRaisesRegex(AIAnalysisError, "conflicts with property 516"):
+            validate_ai_analysis(analysis, payload, props)
+
     def test_reversed_ai_display_and_pricing_mappings_are_safely_corrected(self):
         payload = {
             "quantities": ["arka boş", "arka kazımalı"],

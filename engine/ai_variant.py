@@ -585,8 +585,28 @@ def validate_ai_analysis(
         if prop is None:
             raise AIAnalysisError("Unknown display mapping property_id: %s" % property_id)
         component = str(item.get("component") or "").strip().lower()
-        if component not in ALLOWED_COMPONENTS or component not in component_by_property.get(property_id, []):
-            raise AIAnalysisError("Display mapping component is not valid for property %s" % property_id)
+        current_components = component_by_property.get(property_id, [])
+        if component not in ALLOWED_COMPONENTS:
+            raise AIAnalysisError(
+                "Display mapping component %r is not valid for property %s" % (component, property_id)
+            )
+        if component not in current_components:
+            # The model can correctly map every value for an unresolved Etsy
+            # property yet omit the matching component_override. Completing
+            # that omission is safe only while the property is still unknown;
+            # a resolved but contradictory component remains an error.
+            if not current_components or "unknown" in current_components:
+                component_by_property[property_id] = [component]
+                if property_id not in component_property_ids:
+                    result["override"]["component_overrides"].append(
+                        {"property_id": property_id, "components": [component]}
+                    )
+                    component_property_ids.add(property_id)
+            else:
+                raise AIAnalysisError(
+                    "Display mapping component %r conflicts with property %s components %r"
+                    % (component, property_id, current_components)
+                )
         display_key = (property_id, component)
         if display_key in display_mapping_keys:
             raise AIAnalysisError("Duplicate display mapping for property %s component %s" % display_key)
