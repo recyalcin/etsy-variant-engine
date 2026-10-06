@@ -130,6 +130,31 @@ def _canonical_value(value: Any, allowed: Iterable[str], label: str) -> str:
     return matches[0]
 
 
+def _canonical_mapping_pair(
+    source_value: Any,
+    target_value: Any,
+    sources: Iterable[str],
+    targets: Iterable[str],
+    label: str,
+) -> Tuple[str, str]:
+    """Canonicalize source->target, safely correcting a fully reversed AI pair."""
+    sources_list = list(sources)
+    targets_list = list(targets)
+    try:
+        return (
+            _canonical_value(source_value, sources_list, "%s source" % label),
+            _canonical_value(target_value, targets_list, "%s target" % label),
+        )
+    except AIAnalysisError as original_error:
+        try:
+            return (
+                _canonical_value(target_value, sources_list, "%s source" % label),
+                _canonical_value(source_value, targets_list, "%s target" % label),
+            )
+        except AIAnalysisError:
+            raise original_error
+
+
 def deterministic_value_mapping(sources: List[str], targets: List[str]) -> Dict[str, str]:
     """Map complete lists by normalized equality or unique numeric meaning."""
     if not sources or not targets:
@@ -371,6 +396,7 @@ def _prompt() -> str:
         "Allowed components are color, length, qty, and size. Never invent component names. "
         "Use component overrides only when detected components are wrong or unknown. "
         "Map every relevant workshop source value to an exact Etsy target value from the supplied property. "
+        "In every mapping, source is the workshop input and target is the Etsy template value; never reverse them. "
         "Do not invent Etsy values and do not map by array position alone. Avoid duplicate targets. "
         "For qty, provide complete qty_numbers. Semantic options without literal numbers must use unique 1..N ordinals "
         "in workshop input order; never assign the same qty number to multiple source values. "
@@ -571,8 +597,13 @@ def validate_ai_analysis(
         seen_sources = set()
         seen_targets = set()
         for mapping in item.get("mappings") or []:
-            source = _canonical_value(mapping.get("source"), sources, "display mapping source")
-            target = _canonical_value(mapping.get("target"), targets, "display mapping target")
+            source, target = _canonical_mapping_pair(
+                mapping.get("source"),
+                mapping.get("target"),
+                sources,
+                targets,
+                "display mapping",
+            )
             source_norm = normalize_text(source)
             target_norm = normalize_text(target)
             if source_norm in seen_sources:
@@ -645,8 +676,13 @@ def validate_ai_analysis(
         allowed_targets = [value for prop in props for value in _property_values(prop)]
     pricing_targets_seen = set()
     for item in analysis.get("pricing_label_map") or []:
-        source = _canonical_value(item.get("source"), pricing_sources, "pricing source")
-        target = _canonical_value(item.get("target"), allowed_targets, "pricing target")
+        source, target = _canonical_mapping_pair(
+            item.get("source"),
+            item.get("target"),
+            pricing_sources,
+            allowed_targets,
+            "pricing",
+        )
         source_norm = normalize_text(source)
         target_norm = normalize_text(target)
         if source_norm in pricing_seen:

@@ -103,6 +103,57 @@ def zodiac_analysis(property_id=514):
 
 
 class AIVariantTests(unittest.TestCase):
+    def test_reversed_ai_display_and_pricing_mappings_are_safely_corrected(self):
+        payload = {
+            "quantities": ["arka boş", "arka kazımalı"],
+            "pricing_by": "qty",
+            "pricing": {"Arka boş": 45, "Arka kazımalı": 55},
+        }
+        props = [{
+            "property_id": 516,
+            "property_name": "Pendant Type",
+            "components": ["unknown"],
+            "sample_values": ["Backside Engraving", "No Engraving"],
+            "all_values": ["Backside Engraving", "No Engraving"],
+        }]
+        analysis = {
+            "override_required": True,
+            "confidence": 0.98,
+            "reason": "Engraving choices match.",
+            "override": {
+                "component_overrides": [{"property_id": 516, "components": ["qty"]}],
+                "delim_overrides": [],
+                "qty_numbers": [
+                    {"source": "arka boş", "number": 1},
+                    {"source": "arka kazımalı", "number": 2},
+                ],
+                "display_value_overrides": [{
+                    "property_id": 516,
+                    "component": "qty",
+                    "mappings": [
+                        {"source": "No Engraving", "target": "arka boş"},
+                        {"source": "Backside Engraving", "target": "arka kazımalı"},
+                    ],
+                }],
+            },
+            "pricing_label_map": [
+                {"source": "No Engraving", "target": "Arka boş"},
+                {"source": "Backside Engraving", "target": "Arka kazımalı"},
+            ],
+        }
+
+        validated = validate_ai_analysis(analysis, payload, props)
+
+        display = validated["override"]["display_value_overrides"][0]["mappings"]
+        self.assertEqual(display, [
+            {"source": "arka boş", "target": "No Engraving"},
+            {"source": "arka kazımalı", "target": "Backside Engraving"},
+        ])
+        self.assertEqual(validated["pricing_label_map"], [
+            {"source": "Arka boş", "target": "No Engraving"},
+            {"source": "Arka kazımalı", "target": "Backside Engraving"},
+        ])
+
     def test_ring_size_remains_length_when_product_has_fixed_mm_size(self):
         payload = {
             "size": "4mm",
