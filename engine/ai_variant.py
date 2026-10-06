@@ -87,6 +87,10 @@ def _strong_components(property_name: Any) -> Optional[List[str]]:
     name = normalize_text(property_name)
     has_color = any(token in name for token in ("color", "colour", "renk", "finish", "metal"))
     has_length = any(token in name for token in ("chain length", "necklace length", "bracelet length", "length", "uzunluk"))
+    # Workshop payloads use the length axis for ring-number choices, while
+    # `size` is the fixed physical width/thickness (for example 4mm).
+    if "ring size" in name:
+        return ["length"]
     if has_color and has_length:
         return ["color", "length"]
     if has_length:

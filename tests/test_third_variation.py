@@ -51,6 +51,31 @@ class ThirdVariationTests(unittest.TestCase):
         self.assertEqual(second, "01")
         self.assertEqual(first_again, "00")
 
+    def test_ring_size_property_uses_length_axis_not_fixed_mm_size(self):
+        inventory = {
+            "products": [{
+                "property_values": [
+                    {
+                        "property_id": 514,
+                        "property_name": "Ring Size",
+                        "values": ["3"],
+                    }
+                ]
+            }]
+        }
+        payload = {
+            "size": "4mm",
+            "lengths_inch": ["3", "3.5", "4"],
+        }
+
+        result = run_inventory.analyze_template(inventory, set(), {"3", "3.5", "4"}, payload)
+
+        self.assertEqual(result["properties"][0]["components"], ["length"])
+        self.assertEqual(
+            run_inventory.normalize_length_for_property("3.5", result["properties"][0]),
+            "3.5",
+        )
+
     def test_multiple_quantities_require_an_etsy_quantity_property(self):
         payload = {"quantities": ["garnet", "amethyst", "aqua"]}
         props = [

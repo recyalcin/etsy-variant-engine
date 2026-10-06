@@ -103,6 +103,36 @@ def zodiac_analysis(property_id=514):
 
 
 class AIVariantTests(unittest.TestCase):
+    def test_ring_size_remains_length_when_product_has_fixed_mm_size(self):
+        payload = {
+            "size": "4mm",
+            "lengths_inch": ["3", "3.5", "4", "4.5", "5"],
+            "quantities": [],
+            "pricing_by": "color",
+            "pricing": {"Gold": 75, "Silver": 75, "Rose": 64},
+        }
+        props = [{
+            "property_id": 514,
+            "property_name": "Ring Size",
+            "components": ["length"],
+            "sample_values": ["3", "3.5", "4", "4.5", "5"],
+            "all_values": ["3", "3.5", "4", "4.5", "5"],
+        }]
+
+        deterministic = build_deterministic_analysis(payload, props)
+
+        self.assertFalse(deterministic["override_required"])
+        self.assertEqual(deterministic["override"]["component_overrides"], [])
+
+        with patch("engine.ai_variant.request_openai_analysis") as request:
+            result, state = resolve_variant_analysis(
+                "shiny", payload, props, "secret", "gpt-4o-mini", mode="necessary"
+            )
+
+        request.assert_not_called()
+        self.assertEqual(result, payload)
+        self.assertEqual(state["status"], "skipped_deterministic_sufficient")
+
     def test_ai_is_not_called_when_template_has_no_property_for_quantity_axis(self):
         payload = {
             "quantities": ["garnet", "amethyst"],
