@@ -1516,6 +1516,31 @@ def validate_template_properties_resolved(
     )
 
 
+def validate_quantity_variation_supported(
+    payload: Dict[str, Any],
+    props: List[Dict[str, Any]],
+) -> None:
+    quantities = [
+        str(value).strip()
+        for value in ensure_list(payload.get("quantities", []))
+        if str(value).strip() and str(value).strip() != "-"
+    ]
+    has_qty_property = any("qty" in (prop.get("components") or []) for prop in props)
+    if len(quantities) <= 1 or has_qty_property:
+        return
+
+    template_labels = ", ".join(
+        "%s (%s)" % (prop.get("property_id"), prop.get("property_name") or "unnamed")
+        for prop in props
+    ) or "none"
+    raise ValueError(
+        "Listing template has no quantity/stone variation property, but input provides %s Quantity options: %s. "
+        "Current Etsy properties: %s. Add a third Etsy variation for the stone choices, then run again. "
+        "No database codes or Etsy inventory were changed."
+        % (len(quantities), quantities, template_labels)
+    )
+
+
 # ------------------- SKU decode -------------------
 
 
@@ -1680,6 +1705,7 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
     safe_print("----- AI_ANALYSIS_JSON_END -----")
 
     validate_template_properties_resolved(props, ai_state)
+    validate_quantity_variation_supported(payload, props)
 
     qty_prop = next((p for p in props if "qty" in (p.get("components") or [])), None)
     size_prop = next((p for p in props if "size" in (p.get("components") or [])), None)

@@ -51,6 +51,28 @@ class ThirdVariationTests(unittest.TestCase):
         self.assertEqual(second, "01")
         self.assertEqual(first_again, "00")
 
+    def test_multiple_quantities_require_an_etsy_quantity_property(self):
+        payload = {"quantities": ["garnet", "amethyst", "aqua"]}
+        props = [
+            {"property_id": 513, "property_name": "Color", "components": ["color"]},
+            {"property_id": 514, "property_name": "Chain Length", "components": ["length"]},
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "no quantity/stone variation property.*3 Quantity options",
+        ):
+            run_inventory.validate_quantity_variation_supported(payload, props)
+
+    def test_single_quantity_can_remain_a_fixed_sku_component(self):
+        payload = {"quantities": ["garnet"]}
+        props = [
+            {"property_id": 513, "property_name": "Color", "components": ["color"]},
+            {"property_id": 514, "property_name": "Chain Length", "components": ["length"]},
+        ]
+
+        run_inventory.validate_quantity_variation_supported(payload, props)
+
     def test_template_qty_units_do_not_leak_from_length_property(self):
         inventory = {
             "products": [

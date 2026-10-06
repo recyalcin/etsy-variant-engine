@@ -271,6 +271,8 @@ def analysis_needed(payload: Dict[str, Any], props: List[Dict[str, Any]]) -> Tup
         return False, "deterministic analyzer sufficient"
 
     qty_props = [prop for prop in props if "qty" in components.get(int(prop["property_id"]), [])]
+    if not qty_props:
+        return False, "quantity input has no Etsy variation property; AI cannot create a property ID"
     if len(qty_props) != 1:
         return True, "quantity input does not map to exactly one Etsy property"
 
@@ -954,7 +956,11 @@ def resolve_variant_analysis(
     state["reason"] = state["reason"] or reason
     if mode != "always" and not needs_ai:
         if state["status"] == "started":
-            state["status"] = "skipped_deterministic_sufficient"
+            state["status"] = (
+                "skipped_not_applicable"
+                if "AI cannot create a property ID" in reason
+                else "skipped_deterministic_sufficient"
+            )
         return working, state
 
     if not api_key:

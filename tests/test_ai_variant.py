@@ -7,6 +7,7 @@ from engine.ai_variant import (
     AIAnalysisError,
     AIUnavailableError,
     apply_analysis,
+    analysis_needed,
     build_deterministic_analysis,
     load_saved_analysis,
     request_openai_analysis,
@@ -102,6 +103,30 @@ def zodiac_analysis(property_id=514):
 
 
 class AIVariantTests(unittest.TestCase):
+    def test_ai_is_not_called_when_template_has_no_property_for_quantity_axis(self):
+        payload = {
+            "quantities": ["garnet", "amethyst"],
+            "pricing_by": "fixed",
+            "pricing": 80,
+        }
+        props = [
+            {"property_id": 513, "property_name": "Color", "components": ["color"]},
+            {"property_id": 514, "property_name": "Chain Length", "components": ["length"]},
+        ]
+
+        needed, reason = analysis_needed(payload, props)
+        self.assertFalse(needed)
+        self.assertIn("cannot create a property ID", reason)
+
+        with patch("engine.ai_variant.request_openai_analysis") as request:
+            result, state = resolve_variant_analysis(
+                "shiny", payload, props, "secret", "gpt-4o-mini", mode="necessary"
+            )
+
+        request.assert_not_called()
+        self.assertEqual(result, payload)
+        self.assertEqual(state["status"], "skipped_not_applicable")
+
     def test_engraving_semantic_options_are_mapped_and_priced_end_to_end(self):
         payload = {
             "quantities": ["boş", "arka taraf kazımalı"],
