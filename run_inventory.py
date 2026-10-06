@@ -1433,11 +1433,16 @@ def preflight_validate_products(
                 raise ValueError("Preflight failed: product %s has an empty variation value" % index)
             property_id = int(property_value["property_id"])
             allowed_values = allowed_values_by_property.get(property_id) or set()
-            generated_value = norm_tr(html.unescape(str(values[0])).strip())
+            generated_value_raw = html.unescape(str(values[0])).strip()
+            generated_value = norm_tr(generated_value_raw)
+            generated_value_is_length = looks_like_length_token(
+                strip_option_word(generated_value_raw)
+            )
             if (
                 property_id in strict_value_property_ids
                 and allowed_values
                 and generated_value not in allowed_values
+                and not generated_value_is_length
             ):
                 raise ValueError(
                     "Preflight failed: product %s value %r is not present in Etsy property %s"

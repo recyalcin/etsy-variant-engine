@@ -121,6 +121,25 @@ class ThirdVariationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
 
+    def test_preflight_allows_length_value_when_component_is_unknown(self):
+        profile = run_inventory.PROFILES["shiny"]
+        sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
+        products = [{
+            "sku": "0" * sku_length,
+            "property_values": [{"property_id": 514, "values": ["14 inches"]}],
+            "offerings": [{"price": 10, "quantity": 1, "readiness_state_id": 1}],
+        }]
+        props = [{
+            "property_id": 514,
+            "components": ["unknown"],
+            "sample_values": ["16 inches", "18 inches"],
+            "all_values": ["16 inches", "18 inches"],
+        }]
+
+        result = run_inventory.preflight_validate_products(products, props, 1, profile)
+
+        self.assertTrue(result["ok"])
+
     def test_preflight_allows_new_combined_property_value(self):
         profile = run_inventory.PROFILES["shiny"]
         sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
