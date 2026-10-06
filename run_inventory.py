@@ -1031,6 +1031,12 @@ def resolve_length_code(profile: Profile, length_raw: str, i_length_rows: List[D
 
 
 def resolve_size_code(profile: Profile, size_raw: str, i_size_rows: List[Dict[str, Any]]) -> str:
+    def sku_size_code(db_code: Any) -> str:
+        code = str(db_code or "").strip()
+        if profile.name == "shiny" and len(code) == 1:
+            return "0" + code
+        return code
+
     raw = str(size_raw or "").strip()
     if not raw or raw == "-":
         # A missing/fixed size is a SKU placeholder, not a real size code.
@@ -1042,15 +1048,17 @@ def resolve_size_code(profile: Profile, size_raw: str, i_size_rows: List[Dict[st
 
     for r in i_size_rows:
         if norm_tr(r.get("desc") or "") == target:
-            DB_ACTIONS.append({"action": "EXISTS", "table": "i_size", "desc": raw, "code": r["code"], "match": "desc"})
-            return str(r["code"])
+            resolved_code = sku_size_code(r["code"])
+            DB_ACTIONS.append({"action": "EXISTS", "table": "i_size", "desc": raw, "code": resolved_code, "db_code": r["code"], "match": "desc"})
+            return resolved_code
 
     if any("desc2" in r for r in i_size_rows):
         for r in i_size_rows:
             d2 = (r.get("desc2") or "").strip()
             if d2 and d2 != "-" and norm_tr(d2) == target:
-                DB_ACTIONS.append({"action": "EXISTS", "table": "i_size", "desc2": raw, "code": r["code"], "match": "desc2"})
-                return str(r["code"])
+                resolved_code = sku_size_code(r["code"])
+                DB_ACTIONS.append({"action": "EXISTS", "table": "i_size", "desc2": raw, "code": resolved_code, "db_code": r["code"], "match": "desc2"})
+                return resolved_code
 
     return upsert_by_desc_schema("i_size", raw, profile.size_len)
 

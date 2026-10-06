@@ -113,6 +113,28 @@ class ThirdVariationTests(unittest.TestCase):
         self.assertEqual(result, "00")
         self.assertEqual(len(result), profile.size_len)
 
+    def test_legacy_one_character_size_is_padded_only_for_shiny(self):
+        rows = [{"code": "A", "desc": "6mm"}]
+
+        shiny_code = run_inventory.resolve_size_code(
+            run_inventory.PROFILES["shiny"], "6mm", rows
+        )
+        belkymood_code = run_inventory.resolve_size_code(
+            run_inventory.PROFILES["belkymood"], "6mm", rows
+        )
+
+        self.assertEqual(shiny_code, "0A")
+        self.assertEqual(belkymood_code, "A")
+
+    def test_existing_two_character_shiny_size_is_unchanged(self):
+        result = run_inventory.resolve_size_code(
+            run_inventory.PROFILES["shiny"],
+            "8mm",
+            [{"code": "A3", "desc": "8mm"}],
+        )
+
+        self.assertEqual(result, "A3")
+
     def test_active_runner_enables_three_variations_on_put(self):
         response = Mock(ok=True)
         response.json.return_value = {"listing_id": 123}
