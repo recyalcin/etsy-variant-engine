@@ -121,7 +121,7 @@ class ThirdVariationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
 
-    def test_preflight_allows_length_value_when_component_is_unknown(self):
+    def test_preflight_rejects_length_value_when_component_is_unknown(self):
         profile = run_inventory.PROFILES["shiny"]
         sku_length = sum(profile.sku_lengths()[part] for part in profile.sku_order)
         products = [{
@@ -136,9 +136,26 @@ class ThirdVariationTests(unittest.TestCase):
             "all_values": ["16 inches", "18 inches"],
         }]
 
-        result = run_inventory.preflight_validate_products(products, props, 1, profile)
+        with self.assertRaisesRegex(ValueError, "not present in Etsy property"):
+            run_inventory.preflight_validate_products(products, props, 1, profile)
 
-        self.assertTrue(result["ok"])
+    def test_unresolved_template_property_stops_before_product_generation(self):
+        props = [{
+            "property_id": 514,
+            "property_name": "Zodiac Sign",
+            "components": ["unknown"],
+        }]
+        ai_state = {
+            "enabled": True,
+            "status": "invalid_response",
+            "reason": "Invalid AI mapping",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unresolved Etsy variation property: 514 \\(Zodiac Sign\\)",
+        ):
+            run_inventory.validate_template_properties_resolved(props, ai_state)
 
     def test_preflight_allows_new_combined_property_value(self):
         profile = run_inventory.PROFILES["shiny"]

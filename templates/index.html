@@ -152,7 +152,7 @@
         {% if result.ai_analysis and result.ai_analysis.enabled %}
           {% set ai = result.ai_analysis %}
           {% set shown_override = ai.generated_override or ai.proposed_override or {} %}
-          {% set ai_warning = ai.status in ['unavailable', 'low_confidence', 'confirmation_required'] %}
+          {% set ai_warning = ai.status in ['unavailable', 'invalid_response', 'low_confidence', 'confirmation_required'] %}
           <details open>
             <summary>AI analiz önizlemesi</summary>
             <div style="margin-top:10px">

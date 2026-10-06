@@ -68,7 +68,140 @@ def analysis_for(property_id=514):
     }
 
 
+def zodiac_analysis(property_id=514):
+    return {
+        "override_required": True,
+        "confidence": 0.98,
+        "reason": "Workshop values match Etsy zodiac choices.",
+        "override": {
+            "component_overrides": [
+                {"property_id": property_id, "components": ["qty"]}
+            ],
+            "delim_overrides": [],
+            "qty_numbers": [
+                {"source": "Kova", "number": 1},
+                {"source": "Koç", "number": 1},
+                {"source": "Yengeç", "number": 1},
+            ],
+            "display_value_overrides": [{
+                "property_id": property_id,
+                "component": "qty",
+                "mappings": [
+                    {"source": "Kova", "target": "Aquarius"},
+                    {"source": "Koç", "target": "Aries"},
+                    {"source": "Yengeç", "target": "Cancer"},
+                ],
+            }],
+        },
+        "pricing_label_map": [
+            {"source": "Kova", "target": "Aquarius"},
+            {"source": "Koç", "target": "Aries"},
+            {"source": "Yengeç", "target": "Cancer"},
+        ],
+    }
+
+
 class AIVariantTests(unittest.TestCase):
+    def test_engraving_semantic_options_are_mapped_and_priced_end_to_end(self):
+        payload = {
+            "quantities": ["boş", "arka taraf kazımalı"],
+            "pricing_by": "qty",
+            "pricing": {"boş": 69, "arka taraf kazımalı": 85},
+        }
+        props = [{
+            "property_id": 514,
+            "property_name": "Engraving",
+            "components": ["unknown"],
+            "all_values": ["No Engraving", "Backside Engraving"],
+        }]
+        analysis = {
+            "override_required": True,
+            "confidence": 0.97,
+            "reason": "Complete engraving match.",
+            "override": {
+                "component_overrides": [{"property_id": 514, "components": ["qty"]}],
+                "delim_overrides": [],
+                "qty_numbers": [
+                    {"source": "boş", "number": 1},
+                    {"source": "arka taraf kazımalı", "number": 1},
+                ],
+                "display_value_overrides": [{
+                    "property_id": 514,
+                    "component": "qty",
+                    "mappings": [
+                        {"source": "boş", "target": "No Engraving"},
+                        {"source": "arka taraf kazımalı", "target": "Backside Engraving"},
+                    ],
+                }],
+            },
+            "pricing_label_map": [
+                {"source": "boş", "target": "No Engraving"},
+                {"source": "arka taraf kazımalı", "target": "Backside Engraving"},
+            ],
+        }
+
+        with patch("engine.ai_variant.request_openai_analysis", return_value=analysis):
+            normalized, state = resolve_variant_analysis(
+                "shiny", payload, props, "secret", "gpt-4o-mini", mode="always"
+            )
+
+        self.assertEqual(state["status"], "ai_applied")
+        self.assertEqual(normalized["qty_numbers"], {"boş": 1, "arka taraf kazımalı": 2})
+        self.assertEqual(
+            normalized["pricing"],
+            {"No Engraving": 69.0, "Backside Engraving": 85.0},
+        )
+
+    def test_semantic_qty_duplicate_numbers_are_replaced_with_unique_ordinals(self):
+        payload = {
+            "quantities": ["Kova", "Koç", "Yengeç"],
+            "pricing_by": "qty",
+            "pricing": {"Kova": 50, "Koç": 50, "Yengeç": 50},
+        }
+        props = [{
+            "property_id": 514,
+            "property_name": "Zodiac Sign",
+            "components": ["unknown"],
+            "all_values": ["Aquarius", "Aries", "Cancer"],
+        }]
+
+        validated = validate_ai_analysis(zodiac_analysis(), payload, props)
+
+        self.assertEqual(
+            validated["override"]["qty_numbers"],
+            [
+                {"source": "Kova", "number": 1},
+                {"source": "Koç", "number": 2},
+                {"source": "Yengeç", "number": 3},
+            ],
+        )
+
+    def test_zodiac_analysis_applies_component_mapping_and_normalizes_pricing(self):
+        payload = {
+            "quantities": ["Kova", "Koç", "Yengeç"],
+            "pricing_by": "qty",
+            "pricing": {"Kova": 50, "Koç": 55, "Yengeç": 60},
+        }
+        props = [{
+            "property_id": 514,
+            "property_name": "Zodiac Sign",
+            "components": ["unknown"],
+            "all_values": ["Aquarius", "Aries", "Cancer"],
+        }]
+        with patch("engine.ai_variant.request_openai_analysis", return_value=zodiac_analysis()):
+            normalized, state = resolve_variant_analysis(
+                "shiny", payload, props, "secret", "gpt-4o-mini", mode="always"
+            )
+
+        self.assertEqual(state["status"], "ai_applied")
+        self.assertTrue(state["applied"])
+        self.assertEqual(normalized["component_overrides"], {"514": ["qty"]})
+        self.assertEqual(normalized["qty_numbers"], {"Kova": 1, "Koç": 2, "Yengeç": 3})
+        self.assertEqual(
+            normalized["pricing"],
+            {"Aquarius": 50.0, "Aries": 55.0, "Cancer": 60.0},
+        )
+
     def test_deterministic_birthstone_mapping_is_complete_and_normalizes_prices(self):
         payload = birthstone_payload()
         props = [qty_property()]

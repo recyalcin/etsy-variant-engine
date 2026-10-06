@@ -1433,16 +1433,11 @@ def preflight_validate_products(
                 raise ValueError("Preflight failed: product %s has an empty variation value" % index)
             property_id = int(property_value["property_id"])
             allowed_values = allowed_values_by_property.get(property_id) or set()
-            generated_value_raw = html.unescape(str(values[0])).strip()
-            generated_value = norm_tr(generated_value_raw)
-            generated_value_is_length = looks_like_length_token(
-                strip_option_word(generated_value_raw)
-            )
+            generated_value = norm_tr(html.unescape(str(values[0])).strip())
             if (
                 property_id in strict_value_property_ids
                 and allowed_values
                 and generated_value not in allowed_values
-                and not generated_value_is_length
             ):
                 raise ValueError(
                     "Preflight failed: product %s value %r is not present in Etsy property %s"
@@ -1469,6 +1464,36 @@ def preflight_validate_products(
         "property_ids": sorted(expected_property_ids),
         "sku_length": expected_sku_length,
     }
+
+
+def validate_template_properties_resolved(
+    props: List[Dict[str, Any]],
+    ai_state: Optional[Dict[str, Any]] = None,
+) -> None:
+    unresolved = [
+        prop
+        for prop in props
+        if not (prop.get("components") or [])
+        or "unknown" in (prop.get("components") or [])
+    ]
+    if not unresolved:
+        return
+
+    labels = ", ".join(
+        "%s (%s)" % (prop.get("property_id"), prop.get("property_name") or "unnamed")
+        for prop in unresolved
+    )
+    ai_detail = ""
+    if ai_state and ai_state.get("enabled"):
+        ai_detail = " AI status=%s: %s" % (
+            ai_state.get("status") or "unknown",
+            ai_state.get("reason") or "no validated mapping was produced",
+        )
+    raise ValueError(
+        "Unresolved Etsy variation property: %s.%s "
+        "A validated AI result or manual component_overrides mapping is required before product generation."
+        % (labels, ai_detail)
+    )
 
 
 # ------------------- SKU decode -------------------
@@ -1633,6 +1658,8 @@ def build_and_push(profile: Profile, payload: Dict[str, Any], dry_run: bool) -> 
     safe_print("----- AI_ANALYSIS_JSON_BEGIN -----")
     safe_print(json.dumps(public_ai_state, ensure_ascii=False, indent=2))
     safe_print("----- AI_ANALYSIS_JSON_END -----")
+
+    validate_template_properties_resolved(props, ai_state)
 
     qty_prop = next((p for p in props if "qty" in (p.get("components") or [])), None)
     size_prop = next((p for p in props if "size" in (p.get("components") or [])), None)

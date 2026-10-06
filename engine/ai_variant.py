@@ -366,7 +366,8 @@ def _prompt() -> str:
         "Use component overrides only when detected components are wrong or unknown. "
         "Map every relevant workshop source value to an exact Etsy target value from the supplied property. "
         "Do not invent Etsy values and do not map by array position alone. Avoid duplicate targets. "
-        "For qty, provide complete qty_numbers; semantic options without literal numbers may use 1..N only when meaning/order is clear. "
+        "For qty, provide complete qty_numbers. Semantic options without literal numbers must use unique 1..N ordinals "
+        "in workshop input order; never assign the same qty number to multiple source values. "
         "pricing_label_map must completely map qty pricing labels when display labels change. "
         "Do not emit unnecessary delimiter or component overrides."
     )
@@ -531,7 +532,6 @@ def validate_ai_analysis(
     quantities = _source_values(payload, "qty")
     quantity_lookup = _canonical_lookup(quantities)
     qty_number_sources = set()
-    qty_numbers_seen = set()
     for item in override.get("qty_numbers") or []:
         source = _canonical_value(item.get("source"), quantities, "qty_numbers source")
         number = int(item.get("number"))
@@ -543,10 +543,7 @@ def validate_ai_analysis(
         normalized_source = normalize_text(source)
         if normalized_source in qty_number_sources:
             raise AIAnalysisError("Duplicate qty_numbers source: %r" % source)
-        if number in qty_numbers_seen:
-            raise AIAnalysisError("Duplicate qty_numbers value: %r" % number)
         qty_number_sources.add(normalized_source)
-        qty_numbers_seen.add(number)
         result["override"]["qty_numbers"].append({"source": source, "number": number})
 
     display_mapping_keys = set()
@@ -585,6 +582,49 @@ def validate_ai_analysis(
             {"property_id": property_id, "component": component, "mappings": mappings}
         )
 
+    introduces_qty = (
+        any("qty" in item["components"] for item in result["override"]["component_overrides"])
+        or any(item["component"] == "qty" for item in result["override"]["display_value_overrides"])
+    )
+    if quantities and (introduces_qty or result["override"]["qty_numbers"]):
+        proposed_numbers = {
+            normalize_text(item["source"]): int(item["number"])
+            for item in result["override"]["qty_numbers"]
+        }
+        canonical_numbers: Dict[str, int] = {}
+        used_numbers = set()
+
+        # Literal numbers are semantic and must be preserved first.
+        for source in quantities:
+            literal = _first_integer(source)
+            if literal is None:
+                continue
+            if literal in used_numbers:
+                raise AIAnalysisError("Duplicate literal quantity meaning: %r" % literal)
+            canonical_numbers[source] = literal
+            used_numbers.add(literal)
+
+        # Non-numeric semantic choices use stable, unique input-order ordinals.
+        next_ordinal = 1
+        for source in quantities:
+            if source in canonical_numbers:
+                continue
+            proposed = proposed_numbers.get(normalize_text(source))
+            if proposed is not None and proposed > 0 and proposed not in used_numbers:
+                number = proposed
+            else:
+                while next_ordinal in used_numbers:
+                    next_ordinal += 1
+                number = next_ordinal
+            canonical_numbers[source] = number
+            used_numbers.add(number)
+
+        result["override"]["qty_numbers"] = [
+            {"source": source, "number": canonical_numbers[source]}
+            for source in quantities
+        ]
+        qty_number_sources = {normalize_text(source) for source in quantities}
+
     pricing = payload.get("pricing")
     pricing_sources = list(pricing.keys()) if isinstance(pricing, dict) else []
     pricing_seen = set()
@@ -611,7 +651,8 @@ def validate_ai_analysis(
         pricing_targets_seen.add(target_norm)
         result["pricing_label_map"].append({"source": source, "target": target})
 
-    if payload.get("pricing_by") == "qty" and pricing_sources:
+    has_qty_property = any("qty" in components for components in component_by_property.values())
+    if payload.get("pricing_by") == "qty" and pricing_sources and has_qty_property:
         display_qty_map = {
             normalize_text(mapping["source"]): mapping["target"]
             for item in result["override"]["display_value_overrides"]
@@ -636,9 +677,10 @@ def validate_ai_analysis(
             if source_norm not in explicit_pricing_map:
                 result["pricing_label_map"].append({"source": source, "target": target})
 
-    introduces_nonnumeric_qty = bool(quantities) and any(_first_integer(source) is None for source in quantities) and (
-        any("qty" in item["components"] for item in result["override"]["component_overrides"])
-        or any(item["component"] == "qty" for item in result["override"]["display_value_overrides"])
+    introduces_nonnumeric_qty = (
+        bool(quantities)
+        and any(_first_integer(source) is None for source in quantities)
+        and introduces_qty
     )
     if introduces_nonnumeric_qty and qty_number_sources != set(quantity_lookup):
         raise AIAnalysisError("qty_numbers must cover every non-numeric quantity option")
@@ -924,9 +966,14 @@ def resolve_variant_analysis(
     context = build_request_context(profile, working, props)
     try:
         raw_analysis = request_openai_analysis(api_key, model, context, timeout_seconds=timeout_seconds)
-        analysis = validate_ai_analysis(raw_analysis, working, props)
-    except (AIUnavailableError, AIAnalysisError, KeyError, TypeError, ValueError) as exc:
+    except AIUnavailableError as exc:
         state["status"] = "unavailable"
+        state["reason"] = str(exc)
+        return working, state
+    try:
+        analysis = validate_ai_analysis(raw_analysis, working, props)
+    except (AIAnalysisError, KeyError, TypeError, ValueError) as exc:
+        state["status"] = "invalid_response"
         state["reason"] = str(exc)
         return working, state
 
