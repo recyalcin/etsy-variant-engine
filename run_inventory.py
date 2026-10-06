@@ -912,7 +912,27 @@ def upsert_by_desc_schema(table: str, desc_value: str, code_len: int, desc2_valu
                     execute("UPDATE %s SET desc2=%%s WHERE code=%%s" % table, (desc2_value, r["code"]))
             return r["code"]
 
+    # Dry-run does not write WOULD_INSERT rows to MySQL. Reuse a previously
+    # planned code for the same value, and reserve planned codes so different
+    # new values cannot all receive the same first-free code.
+    if not WRITE_ENABLED:
+        for action in DB_ACTIONS:
+            if (
+                action.get("action") == "WOULD_INSERT"
+                and action.get("table") == table
+                and norm_tr(action.get("desc") or "") == target
+            ):
+                return str(action["code"])
+
     existing = {r["code"] for r in fetchall_dict("SELECT code FROM %s" % table)}
+    if not WRITE_ENABLED:
+        existing.update(
+            str(action["code"])
+            for action in DB_ACTIONS
+            if action.get("action") == "WOULD_INSERT"
+            and action.get("table") == table
+            and action.get("code") is not None
+        )
     new_code = first_free_code(existing, code_len)
 
     values: Dict[str, Any] = {"code": new_code, "desc": desc_value}

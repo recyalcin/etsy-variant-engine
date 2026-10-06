@@ -34,6 +34,23 @@ def products_with_property_ids(*property_ids):
 
 
 class ThirdVariationTests(unittest.TestCase):
+    def setUp(self):
+        run_inventory.DB_ACTIONS.clear()
+
+    def test_dry_run_reserves_distinct_codes_for_new_values(self):
+        with patch.object(run_inventory, "load_table", return_value=[]), patch.object(
+            run_inventory, "table_has_column", return_value=False
+        ), patch.object(run_inventory, "fetchall_dict", return_value=[]), patch.object(
+            run_inventory, "build_insert_sql", return_value=("INSERT", ())
+        ), patch.object(run_inventory, "execute"):
+            first = run_inventory.upsert_by_desc_schema("i_qty", "Aquarius", 2)
+            second = run_inventory.upsert_by_desc_schema("i_qty", "Aries", 2)
+            first_again = run_inventory.upsert_by_desc_schema("i_qty", "Aquarius", 2)
+
+        self.assertEqual(first, "00")
+        self.assertEqual(second, "01")
+        self.assertEqual(first_again, "00")
+
     def test_template_qty_units_do_not_leak_from_length_property(self):
         inventory = {
             "products": [
